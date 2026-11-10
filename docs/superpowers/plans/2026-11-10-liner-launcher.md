@@ -2081,6 +2081,10 @@ object DragTargeting {
      * [bounds] does not matter: the computation sorts by [ItemBounds.top].
      *
      * Returns null when the dragged item is not in [bounds].
+     *
+     * The dragged item keeps its slot while the drag runs; this only reports
+     * the slot it would land in, so the UI can animate an insertion indicator
+     * and commit the reorder on release.
      */
     fun computeTarget(
         dragY: Float,
