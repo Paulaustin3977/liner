@@ -3,6 +3,7 @@ package dev.liner.launcher.ui.settings
 import android.widget.Toast
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -48,6 +49,7 @@ fun SettingsScreen(
 ) {
     val startIndex = remember(initialTab) { tabIndexFor(initialTab) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
+    val scrollState = rememberScrollState()
 
     val context = LocalContext.current
 
@@ -93,10 +95,22 @@ fun SettingsScreen(
                 }
             }
 
+            // The tab content fills the space below the tab row. The Apps
+            // tab brings its own lazy list, and a lazy list inside a
+            // vertically scrolling column is measured with an infinite
+            // height — which Compose refuses to lay out — so the scroll
+            // belongs to the tabs that need one.
             Column(
                 Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .then(
+                        if (TABS[selectedTab] == "Apps") {
+                            Modifier
+                        } else {
+                            Modifier.verticalScroll(scrollState)
+                        },
+                    )
                     .padding(horizontal = 16.dp),
             ) {
                 when (TABS[selectedTab]) {

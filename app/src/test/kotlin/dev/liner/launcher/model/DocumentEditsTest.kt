@@ -162,6 +162,21 @@ class DocumentEditsTest {
     }
 
     @Test
+    fun `reorderHomeItems keeps items in their own sections`() {
+        val document = LayoutDocument(
+            sections = listOf(
+                Section(id = "s1", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+                Section(id = "s2", items = listOf(HomeItem(id = "b", packageName = "p.b"))),
+            ),
+        )
+
+        val result = document.reorderHomeItems(listOf("b", "a"))
+
+        assertEquals(listOf("a"), result.sections[0].items.map { it.id })
+        assertEquals(listOf("b"), result.sections[1].items.map { it.id })
+    }
+
+    @Test
     fun `reorderHomeItems keeps unlisted items in their previous relative order`() {
         // Ids are deliberately in reverse alphabetical order so that sorting by
         // id and sorting by previous position give different answers.
