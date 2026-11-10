@@ -2616,6 +2616,24 @@ class LayoutRepository(private val store: DocumentStore) {
     /** Whether the store has already been read into memory. */
     private val loaded = AtomicBoolean(false)
 
+    /**
+     * Transforms that arrived before the document was read. They are applied
+     * to the real document once it is in memory — applying them to the
+     * defaults would both lose the edit and, because the result is queued
+     * for writing, destroy the stored layout.
+     */
+    private val pendingTransforms = mutableListOf<(LayoutDocument) -> LayoutDocument>()
+
+    /**
+     * Guards the document and the queue of pending transforms.
+     *
+     * The check that decides whether an edit is applied or queued, the
+     * application of an edit and the drain of the queue all happen under it:
+     * an edit must never be applied against a document that a queued edit is
+     * about to change, or the two would overwrite each other.
+     */
+    private val lock = Any()
+
     /** True when the stored layout could not be read and the defaults were used instead. */
     val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
 
@@ -2718,14 +2736,17 @@ class LayoutRepository(private val store: DocumentStore) {
             // Whether the read succeeded or failed, the document has been
             // dealt with: a failed read leaves the defaults in memory, and
             // the caller must know that too.
-            val queued = synchronized(lock) {
+            //
+            // The queued edits are applied under the same lock that [update]
+            // takes, so an edit that arrives while the queue is draining
+            // waits for the lock and is applied after the queued ones — the
+            // edits keep the order in which the user made them.
+            synchronized(lock) {
                 _documentLoaded.value = true
                 val pending = pendingTransforms.toList()
                 pendingTransforms.clear()
-                pending
+                pending.forEach { applyTransform(it) }
             }
-            // The queued edits now apply to the real document.
-            queued.forEach { applyTransform(it) }
         }
     }
 
@@ -2759,22 +2780,18 @@ class LayoutRepository(private val store: DocumentStore) {
     /**
      * Applies [transform] to the in-memory document and persists the result.
      *
+     * An edit that arrives before the store has been read is *queued*, not
+     * applied: the document in memory is then the default one, and applying
+     * the edit to it would lose the edit and — because the result is queued
+     * for writing — write the defaults over the user's stored layout. The
+     * queued edit is applied to the real document as soon as it is in memory.
+     *
      * A transform that changed nothing queues no write: the transform is
      * expected to return the document it was given when there is nothing to
      * change — the identity reference is what says so, so a transform that
      * rebuilds an equal document is still written. That keeps a no-op edit
      * (a prune that finds nothing stale, say) from rewriting the store.
      */
-    /**
-     * Transforms that arrived before the document was read. They are applied
-     * to the real document once it is in memory — applying them to the
-     * defaults would both lose the edit and, because the result is queued
-     * for writing, destroy the stored layout.
-     */
-    private val pendingTransforms = mutableListOf<(LayoutDocument) -> LayoutDocument>()
-
-    private val lock = Any()
-
     fun update(transform: (LayoutDocument) -> LayoutDocument) {
         synchronized(lock) {
             if (!_documentLoaded.value) {
@@ -2782,10 +2799,18 @@ class LayoutRepository(private val store: DocumentStore) {
                 pendingTransforms += transform
                 return
             }
+            applyTransform(transform)
         }
-        applyTransform(transform)
     }
 
+    /**
+     * Applies [transform] to the in-memory document and persists the result.
+     *
+     * The caller holds [lock]: the document is read, transformed and written
+     * back under it, so that two edits can never be applied against the same
+     * document and overwrite each other — and so that a queued edit is never
+     * overtaken by an edit that arrives after it.
+     */
     private fun applyTransform(transform: (LayoutDocument) -> LayoutDocument) {
         val current = _document.value
         val next = transform(current)

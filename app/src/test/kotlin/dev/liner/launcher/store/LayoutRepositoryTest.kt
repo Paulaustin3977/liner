@@ -4,6 +4,7 @@ import dev.liner.launcher.model.DocumentCodec
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.addSection
+import dev.liner.launcher.model.renameSection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -343,6 +344,128 @@ class LayoutRepositoryTest {
 
         assertTrue(repository.documentLoaded.value)
         assertEquals(listOf("s1"), repository.document.value.sections.map { it.id })
+    }
+
+    @Test
+    fun `an edit that arrives before the store is read waits for the stored document`() = runTest {
+        // The read of the store is held at a gate, so the edit below lands
+        // while the document is still being read.
+        val entered = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s0"))))
+        val store = object : DocumentStore {
+            override suspend fun read(): String? {
+                entered.complete(Unit)
+                gate.await()
+                return stored
+            }
+            override suspend fun write(json: String) = Unit
+        }
+        val repository = LayoutRepository(store)
+
+        val loading = async { repository.load() }
+        entered.await()
+
+        // The user unchecks an app in the settings while the store is still
+        // being read.
+        repository.update { it.addSection("s1", "One") }
+
+        // The edit is held, not applied: the document in memory is still the
+        // default one, so the edit was not computed against the wrong base.
+        assertEquals(LayoutDocument(), repository.document.value)
+
+        gate.complete(Unit)
+        loading.await()
+    }
+
+    @Test
+    fun `an edit that arrives before the store is read is applied to the stored document`() = runTest {
+        // The store holds the user's layout, and the read of it is held at a
+        // gate: the edit below lands while the read is still running.
+        val entered = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s0"))))
+        val store = object : DocumentStore {
+            var content: String? = stored
+            override suspend fun read(): String? {
+                entered.complete(Unit)
+                gate.await()
+                return content
+            }
+            override suspend fun write(json: String) { content = json }
+        }
+        val repository = LayoutRepository(store)
+
+        val loading = async { repository.load() }
+        entered.await()
+
+        repository.update { it.addSection("s1", "One") }
+
+        gate.complete(Unit)
+        loading.await()
+        repository.awaitPendingWrite()
+
+        // The edit was applied to the STORED document, not to the defaults.
+        assertEquals(listOf("s0", "s1"), repository.document.value.sections.map { it.id })
+        // And the stored layout was not overwritten with the defaults.
+        val written = DocumentCodec.decode(store.content!!)
+        assertEquals(listOf("s0", "s1"), written?.sections?.map { it.id })
+    }
+
+    @Test
+    fun `several edits that arrive before the store is read are all applied, in order`() = runTest {
+        val entered = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s0"))))
+        val store = object : DocumentStore {
+            var content: String? = stored
+            override suspend fun read(): String? {
+                entered.complete(Unit)
+                gate.await()
+                return content
+            }
+            override suspend fun write(json: String) { content = json }
+        }
+        val repository = LayoutRepository(store)
+
+        val loading = async { repository.load() }
+        entered.await()
+
+        // Three edits, made in this order.
+        repository.update { it.addSection("s1", "One") }
+        repository.update { it.renameSection("s1", "Two") }
+        repository.update { it.renameSection("s1", "Three") }
+
+        gate.complete(Unit)
+        loading.await()
+        repository.awaitPendingWrite()
+
+        // All three landed, on the stored document, in the order they were
+        // made: the last rename is the one that shows.
+        val sections = repository.document.value.sections
+        assertEquals(listOf("s0", "s1"), sections.map { it.id })
+        assertEquals("Three", sections.last().title)
+        val written = DocumentCodec.decode(store.content!!)
+        assertEquals("Three", written?.sections?.last()?.title)
+    }
+
+    @Test
+    fun `an edit that arrives after the store is read is applied at once`() = runTest {
+        val store = InMemoryDocumentStore(
+            DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s0")))),
+        )
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        repository.update { it.addSection("s1", "One") }
+
+        // The document is in memory, so the edit lands straight away — there
+        // is nothing to wait for.
+        assertEquals(listOf("s0", "s1"), repository.document.value.sections.map { it.id })
+
+        repository.awaitPendingWrite()
+        val written = DocumentCodec.decode(store.read()!!)
+        assertEquals(listOf("s0", "s1"), written?.sections?.map { it.id })
     }
 }
 
