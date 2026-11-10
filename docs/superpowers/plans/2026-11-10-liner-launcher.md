@@ -2600,6 +2600,19 @@ class LayoutRepository(private val store: DocumentStore) {
 
     private val _loadFailed = MutableStateFlow(false)
 
+    private val _documentLoaded = MutableStateFlow(false)
+
+    /**
+     * True once the store has been read into memory.
+     *
+     * The signal belongs to the repository, not to a caller of [load]: the
+     * store is read once per process, so a second caller's [load] returns
+     * immediately — a caller that waited on its own call would proceed
+     * before the document was actually in memory, and a write it triggered
+     * would persist the default document over the user's stored layout.
+     */
+    val documentLoaded: StateFlow<Boolean> = _documentLoaded.asStateFlow()
+
     /** Whether the store has already been read into memory. */
     private val loaded = AtomicBoolean(false)
 
@@ -2665,6 +2678,7 @@ class LayoutRepository(private val store: DocumentStore) {
     }
 
     private suspend fun readFromStore() {
+        try {
         var readFailed = false
         val raw = try {
             store.read()
@@ -2700,6 +2714,12 @@ class LayoutRepository(private val store: DocumentStore) {
             _loadFailed.value = false
             _document.value = decoded
         }
+        } finally {
+            // Whether the read succeeded or failed, the document has been
+            // dealt with: a failed read leaves the defaults in memory, and
+            // the caller must know that too.
+            _documentLoaded.value = true
+        }
     }
 
     /**
@@ -2730,7 +2750,12 @@ class LayoutRepository(private val store: DocumentStore) {
     }
 
     fun update(transform: (LayoutDocument) -> LayoutDocument) {
-        val next = transform(_document.value)
+        val current = _document.value
+        val next = transform(current)
+        // A transform that changed nothing must not queue a write: the store
+        // would be rewritten for no reason — once per launcher resume, for a
+        // no-op prune, for instance.
+        if (next === current) return
         _document.value = next
 
         val done = CompletableDeferred<Unit>()
@@ -2818,8 +2843,9 @@ git commit -m "feat(store): add document store, repository and DataStore adapter
 **Interfaces:**
 - Consumes: Task 2's `InstalledApp`, Task 4's `AppCatalog`.
 - Produces:
-  - `class AppListProvider(query: () -> List<InstalledApp>)` with `fun load(): List<InstalledApp>` — pure, no Android types, so the fallback is JVM-testable
-  - `class InstalledAppsRepository(context: Context)` with `fun loadInstalledApps(): List<InstalledApp>` and `fun lastLoadWasFallback(): Boolean`
+  - `class AppListProvider(query: () -> List<InstalledApp>)` with `fun load(): AppLoad` — pure, no Android types, so the fallback is JVM-testable
+  - `class InstalledAppsRepository(context: Context)` with `fun loadInstalledApps(): AppLoad`
+  - `data class AppLoad(val apps: List<InstalledApp>, val wasFallback: Boolean)` — the list and the trust flag travel together, because the repository is shared between the home and the settings screens
   - `class IconCache(loadIcon: (String) -> ImageBitmap?, sizePx: Int)` with `fun icon(packageName: String): ImageBitmap?` and `companion object { fun forPackageManager(packageManager: PackageManager, sizePx: Int): IconCache }`
   - `class AppContainer(context: Context)` with `val repository: LayoutRepository`, `val appsRepository: InstalledAppsRepository`, `val iconCache: IconCache`
   - `class LinerApp : Application` with `val container: AppContainer`
@@ -3045,28 +3071,29 @@ import dev.liner.launcher.model.InstalledApp
  * fallback is unit-testable on the JVM, which is the only way to prove the
  * launcher survives a failing package manager.
  */
+/**
+ * The result of an app query: the apps, and whether the list really
+ * came from the package manager.
+ *
+ * The two travel together because the repository is shared: reading the
+ * list and the flag in two calls could pick up a load performed in between
+ * by the other screen.
+ */
+data class AppLoad(
+    val apps: List<InstalledApp>,
+    val wasFallback: Boolean,
+)
+
 class AppListProvider(private val query: () -> List<InstalledApp>) {
 
     @Volatile
     private var lastSuccessful: List<InstalledApp> = emptyList()
 
-    /**
-     * True when the most recent [load] fell back to the remembered
-     * list rather than returning a fresh query. The fallback covers a failed
-     * query and one that came back empty because the OS filtered the package
-     * visibility. Neither is evidence that the apps were uninstalled, so a
-     * fallback list must never be used to decide that an app is gone.
-     */
-    @Volatile
-    var lastLoadWasFallback: Boolean = false
-        private set
-
-    fun load(): List<InstalledApp> = try {
+    fun load(): AppLoad = try {
         val apps = query()
         if (apps.isNotEmpty()) {
             lastSuccessful = apps
-            lastLoadWasFallback = false
-            apps
+            AppLoad(apps, wasFallback = false)
         } else {
             // An empty result is not a successful result: some OEMs surface
             // restricted package visibility as an empty list rather than an
@@ -3074,15 +3101,13 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
             // cache. A device always has at least one launchable activity —
             // its own launcher — so an empty list means the query was
             // filtered, and the remembered list stands in for it.
-            lastLoadWasFallback = true
-            apps.ifEmpty { lastSuccessful }
+            AppLoad(lastSuccessful, wasFallback = true)
         }
     } catch (_: Exception) {
         // Exception, not Throwable, to match the icon path: a bug or an
         // OutOfMemoryError must surface rather than being swallowed into a
         // silent fallback.
-        lastLoadWasFallback = true
-        lastSuccessful
+        AppLoad(lastSuccessful, wasFallback = true)
     }
 }
 
@@ -3100,14 +3125,7 @@ class InstalledAppsRepository(context: Context) {
 
     private val provider = AppListProvider { queryInstalledApps() }
 
-    fun loadInstalledApps(): List<InstalledApp> = provider.load()
-
-    /**
-     * True when the most recent [loadInstalledApps] fell back to the
-     * remembered list instead of returning a fresh query. A fallback list
-     * must never be used to decide that an app has been uninstalled.
-     */
-    fun lastLoadWasFallback(): Boolean = provider.lastLoadWasFallback
+    fun loadInstalledApps(): AppLoad = provider.load()
 
     private fun queryInstalledApps(): List<InstalledApp> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -4072,6 +4090,7 @@ import dev.liner.launcher.store.LayoutRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
@@ -4127,14 +4146,24 @@ class HomeViewModel(
     fun refreshApps() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val apps = appsRepository.loadInstalledApps()
-                _installedApps.value = apps
+                // The prune may not run before the stored document is in
+                // memory: updating before then would persist the DEFAULT
+                // document over the user's stored layout. The signal comes
+                // from the repository, because a second caller's load()
+                // returns immediately without the document being loaded.
+                repository.documentLoaded.first { it }
+
+                val load = appsRepository.loadInstalledApps()
+                _installedApps.value = load.apps
                 // Auto-pruning removes home entries whose app is gone — but
                 // only from a query that really answered. A failed or
                 // filtered query must never be read as "every app was
                 // uninstalled", or the whole home screen would be deleted.
-                if (!appsRepository.lastLoadWasFallback()) {
-                    val installed = apps.mapTo(HashSet()) { it.packageName }
+                // A failed READ is not evidence either: the in-memory
+                // document is then the default one, and writing it back
+                // would destroy the layout still on disk.
+                if (!load.wasFallback && !repository.loadFailed.value) {
+                    val installed = load.apps.mapTo(HashSet()) { it.packageName }
                     repository.update { doc -> doc.pruneUninstalledApps(installed) }
                 }
             } finally {
@@ -6263,7 +6292,7 @@ class SettingsViewModel(
         // The package manager query is not cheap, so it stays off the main
         // thread.
         viewModelScope.launch(Dispatchers.IO) {
-            _installedApps.value = appsRepository.loadInstalledApps()
+            _installedApps.value = appsRepository.loadInstalledApps().apps
         }
     }
 
