@@ -21,7 +21,7 @@ import dev.liner.launcher.model.HomeEntry
  * remove it from the home screen.
  *
  * [sections] is the document's sections as id/title pairs; the item can be
- * moved to any of them.
+ * moved to any of them except the one it is already in.
  */
 @Composable
 fun ItemEditorSheet(
@@ -32,7 +32,11 @@ fun ItemEditorSheet(
     onRemove: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var label by remember(entry.item.id) { mutableStateOf(entry.item.label ?: entry.displayLabel) }
+    // The field is seeded with the app's own name when the item has no
+    // custom label, so the seeded value has to be remembered to tell a
+    // deliberate rename from an untouched field.
+    val seededLabel = entry.item.label ?: entry.displayLabel
+    var label by remember(entry.item.id) { mutableStateOf(seededLabel) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -46,13 +50,17 @@ fun ItemEditorSheet(
                     label = { Text("Label") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                if (sections.size > 1) {
+                // The item's own section is not offered: moving an item
+                // to the section it is already in would silently push it to
+                // the end of that section.
+                val targets = moveSectionTargets(sections, entry.sectionId)
+                if (targets.isNotEmpty()) {
                     Text(
                         text = "Move to section",
                         modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
                     )
-                    sections.forEach { (id, title) ->
-                        TextButton(onClick = { onMoveToSection(id) }) {
+                    targets.forEach { (id, title) ->
+                        TextButton(onClick = { onMoveToSection(id); onDismiss() }) {
                             Text(title ?: "Untitled")
                         }
                     }
@@ -60,7 +68,12 @@ fun ItemEditorSheet(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onRename(label); onDismiss() }) { Text("Save") }
+            TextButton(
+                onClick = {
+                    onRename(resolveEditedLabel(seededLabel, label, entry.item.label))
+                    onDismiss()
+                },
+            ) { Text("Save") }
         },
         dismissButton = {
             TextButton(onClick = { onRemove(); onDismiss() }) { Text("Remove") }
@@ -69,34 +82,93 @@ fun ItemEditorSheet(
 }
 
 /**
+ * The label an edited item should end up with.
+ *
+ * [seededLabel] is what the field was seeded with — the app's own name when
+ * the item has no custom label — [editedLabel] is what the user left in the
+ * field, and [existingLabel] is the item's current custom label.
+ *
+ * An untouched field must not pin the app's name as an explicit custom
+ * label: the row would stop following a later system rename of the app.
+ */
+internal fun resolveEditedLabel(
+    seededLabel: String,
+    editedLabel: String,
+    existingLabel: String?,
+): String? {
+    val trimmed = editedLabel.trim()
+    return when {
+        // An emptied field resets the item to the app's name.
+        trimmed.isEmpty() -> null
+        // A deliberate rename wins.
+        trimmed != seededLabel -> trimmed
+        // An untouched field leaves the item's label as it was.
+        else -> existingLabel
+    }
+}
+
+/**
+ * The sections an item can be moved to.
+ *
+ * The item's own section is left out: moving an item to the section it is
+ * already in would silently push it to the end of that section.
+ */
+internal fun moveSectionTargets(
+    sections: List<Pair<String, String?>>,
+    currentSectionId: String,
+): List<Pair<String, String?>> = sections.filter { it.first != currentSectionId }
+
+/**
  * The editor for one section: rename it, or delete it — and everything in it.
  */
 @Composable
 fun SectionEditorSheet(
     title: String?,
+    itemCount: Int,
     onRename: (String?) -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var value by remember { mutableStateOf(title ?: "") }
+    // Deleting a section deletes every item in it, and there is no undo for
+    // it, so the action asks first.
+    var confirmingDelete by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Section") },
         text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                singleLine = true,
-                label = { Text("Title") },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (confirmingDelete) {
+                Text(sectionDeletePrompt(itemCount))
+            } else {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    label = { Text("Title") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         },
         confirmButton = {
-            TextButton(onClick = { onRename(value); onDismiss() }) { Text("Save") }
+            if (confirmingDelete) {
+                TextButton(onClick = { onDelete(); onDismiss() }) { Text("Delete") }
+            } else {
+                TextButton(onClick = { onRename(value); onDismiss() }) { Text("Save") }
+            }
         },
         dismissButton = {
-            TextButton(onClick = { onDelete(); onDismiss() }) { Text("Delete") }
+            if (confirmingDelete) {
+                TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") }
+            } else {
+                TextButton(onClick = { confirmingDelete = true }) { Text("Delete") }
+            }
         },
     )
+}
+
+/** The question asked before a section and every item in it are deleted. */
+internal fun sectionDeletePrompt(itemCount: Int): String {
+    val noun = if (itemCount == 1) "item" else "items"
+    return "Delete this section and its $itemCount $noun?"
 }

@@ -113,6 +113,47 @@ class DocumentEditsTest {
     }
 
     @Test
+    fun `an undone removal puts the item back where it was`() {
+        val before = doc()
+        val item = before.sections[0].items[1]
+        val removed = before.removeItem(item.id)
+
+        val restored = removed.addItem(item, sectionId = "s1", index = 1)
+
+        assertEquals(listOf("a", "b", "c"), restored.sections[0].items.map { it.id })
+        assertEquals(before, restored)
+    }
+
+    @Test
+    fun `an undone removal keeps the item's custom label`() {
+        val renamed = doc().renameItem("b", "Mail")
+        val item = renamed.sections[0].items[1]
+
+        val restored = renamed.removeItem("b").addItem(item, sectionId = "s1", index = 1)
+
+        assertEquals("Mail", restored.sections[0].items[1].label)
+    }
+
+    @Test
+    fun `an undone removal cannot add the item twice`() {
+        val before = doc()
+        val item = before.sections[0].items[1]
+
+        // The item is still there: addItem refuses a duplicate id.
+        val restored = before.addItem(item, sectionId = "s1", index = 1)
+
+        assertEquals(before, restored)
+    }
+
+    @Test
+    fun `an undone removal into a deleted section changes nothing`() {
+        val removed = doc().removeItem("b").removeSection("s1")
+        val item = doc().sections[0].items[1]
+
+        assertEquals(removed, removed.addItem(item, sectionId = "s1", index = 1))
+    }
+
+    @Test
     fun `reorderHomeItems reorders within sections without moving between them`() {
         val result = doc().reorderHomeItems(listOf("c", "b", "a", "d"))
 

@@ -25,6 +25,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -35,6 +39,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -65,6 +70,7 @@ import dev.liner.launcher.model.ItemBounds
 import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.StyleResolver
 import dev.liner.launcher.model.ThemeTokens
+import dev.liner.launcher.model.addItem
 import dev.liner.launcher.model.moveItem
 import dev.liner.launcher.model.removeItem
 import dev.liner.launcher.model.removeSection
@@ -80,6 +86,7 @@ import dev.liner.launcher.ui.drawer.DrawerSheet
 import dev.liner.launcher.ui.drawer.DrawerViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.ZoneId
 
@@ -118,9 +125,14 @@ fun HomeScreen(
     val editController = remember { EditModeController() }
     var editingEntry by remember { mutableStateOf<HomeEntry?>(null) }
     var editingSection by remember { mutableStateOf<Section?>(null) }
+    // The snackbar that offers to undo a removal, and the scope its action
+    // runs in.
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     // The finger's position in root coordinates: the drag maths compares it
     // with the rows' bounds, and the trash zone is hit-tested against it.
-    var dragX by remember { mutableFloatStateOf(0f) }
+    // Only the Y is tracked: the trash zone is hit-tested with the whole
+    // pointer offset, so a separate X would be dead state.
     var dragY by remember { mutableFloatStateOf(0f) }
     // Whether the finger is over the trash zone, and where that zone is.
     var overTrash by remember { mutableStateOf(false) }
@@ -144,11 +156,33 @@ fun HomeScreen(
     BackHandler(enabled = editController.active) { editController.exitEditMode() }
     BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
+    // Removes an item and offers to put it back: a drop on the trash zone is
+    // easy to do by accident, and there is no other way back. The removed
+    // item and the slot it came from are kept until the snackbar is gone.
+    fun removeItemWithUndo(itemId: String) {
+        val doc = viewModel.document.value
+        val section = doc.sections.firstOrNull { s -> s.items.any { it.id == itemId } }
+            ?: return
+        val index = section.items.indexOfFirst { it.id == itemId }
+        val item = section.items[index]
+        viewModel.update { it.removeItem(itemId) }
+        scope.launch {
+            val result = snackbarHostState.showSnackbar(
+                message = "Removed ${item.label ?: item.packageName}",
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                viewModel.update { it.addItem(item, section.id, index) }
+            }
+        }
+    }
+
     // Commits a finished drag: the item moves to the slot the indicator
     // showed, or it is removed when it was dropped on the trash zone.
     fun commitDrop(itemId: String) {
         if (overTrash) {
-            viewModel.update { doc -> doc.removeItem(itemId) }
+            removeItemWithUndo(itemId)
             editController.endDrag()
             return
         }
@@ -328,14 +362,12 @@ fun HomeScreen(
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = { offset ->
                                             editController.startDrag(entry.item.id)
-                                            dragX = rowOrigin.x + offset.x
                                             dragY = rowOrigin.y + offset.y
                                             overTrash = false
                                         },
                                         onDrag = { change, _ ->
                                             change.consume()
                                             val finger = rowOrigin + change.position
-                                            dragX = finger.x
                                             dragY = finger.y
                                             overTrash = trashBounds?.contains(finger) == true
                                             if (overTrash) {
@@ -440,6 +472,15 @@ fun HomeScreen(
             }
         }
 
+        // The snackbar that offers to undo a removal. It is drawn above the
+        // trash zone, which only exists in edit mode.
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 104.dp),
+        )
+
         // The drawer is drawn last, so it covers the home screen and the
         // gesture zone below it.
         if (drawerOpen) {
@@ -480,7 +521,7 @@ fun HomeScreen(
                     )
                 }
             },
-            onRemove = { viewModel.update { doc -> doc.removeItem(entry.item.id) } },
+            onRemove = { removeItemWithUndo(entry.item.id) },
             onDismiss = { editingEntry = null },
         )
     }
@@ -488,6 +529,7 @@ fun HomeScreen(
     editingSection?.let { section ->
         SectionEditorSheet(
             title = section.title,
+            itemCount = section.items.size,
             onRename = { title ->
                 viewModel.update { doc -> doc.renameSection(section.id, title) }
             },
