@@ -44,6 +44,10 @@ Every task below implicitly includes these. Values are copied verbatim from the 
   clock size) is read from `ThemeTokens` directly and is not a style decision.
 - **Only `material-icons-core` is available** — not `material-icons-extended`. The full extended set adds ~37 MB to the APK for icons this app never uses. Use a core icon (`Icons.Default.Settings` is in core) or a text label instead.
 - No crashes on: missing app, failed icon load, failed DataStore write, corrupt JSON, `PackageManager` throwing.
+- **Icons are never rasterised on the main thread.** `IconCache` is thread-safe
+  (`LruCache` plus a concurrent set), so both the drawer and the home screen
+  load icons from a background dispatcher and publish the result into Compose
+  state. A drawer with a hundred tiles must not stall the frame.
 - Unit tests live in `app/src/test/kotlin/dev/liner/launcher/` and must run headless via `gradle test`.
 - Instrumentation tests live in `app/src/androidTest/kotlin/dev/liner/launcher/` and **cannot be executed in this environment** (no emulator). They are shipped unverified and must be labelled as such in the README.
 
@@ -4049,13 +4053,21 @@ fun HomeScreen(
                         items = sectionEntries,
                         key = { "${section.id}:${it.item.id}" },
                     ) { entry ->
-                        // Icons are opt-in: the home screen is icon-free by default.
-                        val icon = if (theme.showIcons) {
-                            remember(entry.item.id) {
-                                iconCache.icon(entry.item.packageName)
+                        // Icons are opt-in: the home screen is icon-free by
+                        // default. When they are on, they are rasterised off
+                        // the main thread for the same reason as the drawer.
+                        val icon by produceState<ImageBitmap?>(
+                            initialValue = null,
+                            key1 = entry.item.packageName,
+                            key2 = theme.showIcons,
+                        ) {
+                            value = if (theme.showIcons) {
+                                withContext(Dispatchers.IO) {
+                                    iconCache.icon(entry.item.packageName)
+                                }
+                            } else {
+                                null
                             }
-                        } else {
-                            null
                         }
                         LabelRow(
                             text = entry.displayLabel,
@@ -4389,15 +4401,19 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.liner.launcher.apps.IconCache
 import dev.liner.launcher.model.InstalledApp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun DrawerSheet(
@@ -4455,8 +4471,18 @@ fun DrawerSheet(
                                 .clickable { onLaunch(app) },
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            val icon = remember(app.packageName, app.activityClass) {
-                                iconCache.icon(app.packageName)
+                            // Rasterising an icon touches the package manager
+                            // and allocates a bitmap, so it must not happen on
+                            // the main thread — the drawer can hold a hundred
+                            // tiles. The load is keyed by package name, so a
+                            // scroll cancels it.
+                            val icon by produceState<ImageBitmap?>(
+                                initialValue = null,
+                                key1 = app.packageName,
+                            ) {
+                                value = withContext(Dispatchers.IO) {
+                                    iconCache.icon(app.packageName)
+                                }
                             }
                             if (icon != null) {
                                 Image(
