@@ -44,6 +44,9 @@ Every task below implicitly includes these. Values are copied verbatim from the 
   clock size) is read from `ThemeTokens` directly and is not a style decision.
 - **Only `material-icons-core` is available** — not `material-icons-extended`. The full extended set adds ~37 MB to the APK for icons this app never uses. Use a core icon (`Icons.Default.Settings` is in core) or a text label instead.
 - No crashes on: missing app, failed icon load, failed DataStore write, corrupt JSON, `PackageManager` throwing.
+- **Removing an item from the home screen is always undoable.** The trash
+  zone, the item editor's Remove button and any other removal path raise a
+  snackbar with an Undo action that puts the item back where it was.
 - **Icons are never rasterised on the main thread.** `IconCache` is thread-safe
   (`LruCache` plus a concurrent set), so both the drawer and the home screen
   load icons from a background dispatcher and publish the result into Compose
@@ -4687,7 +4690,7 @@ git commit -m "feat(ui): add the app drawer with filter, grid and text modes"
 - Produces:
   - `class EditModeController` with `var active: Boolean`, `var draggingId: String?`, `var dragTarget: DragTarget?`, `val bounds: MutableMap<String, ItemBounds>`, `fun startDrag(id: String)`, `fun updateDrag(dragY: Float, sectionOrder: List<String>)`, `fun endDrag(): DragTarget?`, `fun clear()`
   - `@Composable fun ItemEditorSheet(entry: HomeEntry, onRename: (String?) -> Unit, onMoveToSection: (String) -> Unit, onRemove: () -> Unit, onDismiss: () -> Unit)`
-  - `@Composable fun SectionEditorSheet(title: String?, onRename: (String?) -> Unit, onDelete: () -> Unit, onDismiss: () -> Unit)`
+  - `@Composable fun SectionEditorSheet(title: String?, itemCount: Int, onRename: (String?) -> Unit, onDelete: () -> Unit, onDismiss: () -> Unit)`
 
 - [ ] **Step 1: Implement the edit mode controller**
 
@@ -4802,7 +4805,11 @@ fun ItemEditorSheet(
     onRemove: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var label by remember(entry.item.id) { mutableStateOf(entry.item.label ?: entry.displayLabel) }
+    // The field is seeded with the app's own name when the item has no
+    // custom label, so the seeded value has to be remembered to tell a
+    // deliberate rename from an untouched field.
+    val seededLabel = entry.item.label ?: entry.displayLabel
+    var label by remember(entry.item.id) { mutableStateOf(seededLabel) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -4816,13 +4823,17 @@ fun ItemEditorSheet(
                     label = { Text("Label") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                if (sections.size > 1) {
+                // The item's own section is not offered: moving an item
+                // to the section it is already in would silently push it to
+                // the end of that section.
+                val targets = sections.filter { it.first != entry.sectionId }
+                if (targets.isNotEmpty()) {
                     Text(
                         text = "Move to section",
                         modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
                     )
-                    sections.forEach { (id, title) ->
-                        TextButton(onClick = { onMoveToSection(id) }) {
+                    targets.forEach { (id, title) ->
+                        TextButton(onClick = { onMoveToSection(id); onDismiss() }) {
                             Text(title ?: "Untitled")
                         }
                     }
@@ -4830,7 +4841,21 @@ fun ItemEditorSheet(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onRename(label); onDismiss() }) { Text("Save") }
+            TextButton(
+                onClick = {
+                    val trimmed = label.trim()
+                    when {
+                        // An emptied field resets the item to the app's name.
+                        trimmed.isEmpty() -> onRename(null)
+                        // An untouched field must not pin the app's name as an
+                        // explicit custom label — the row would stop following
+                        // a later system rename of the app.
+                        trimmed != seededLabel -> onRename(trimmed)
+                        else -> onRename(entry.item.label)
+                    }
+                    onDismiss()
+                },
+            ) { Text("Save") }
         },
         dismissButton = {
             TextButton(onClick = { onRemove(); onDismiss() }) { Text("Remove") }
@@ -4841,29 +4866,48 @@ fun ItemEditorSheet(
 @Composable
 fun SectionEditorSheet(
     title: String?,
+    itemCount: Int,
     onRename: (String?) -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var value by remember { mutableStateOf(title ?: "") }
+    // Deleting a section deletes every item in it, and there is no undo for
+    // it, so the action asks first.
+    var confirmingDelete by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Section") },
         text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                singleLine = true,
-                label = { Text("Title") },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (confirmingDelete) {
+                Text(
+                    "Delete this section and its $itemCount " +
+                        if (itemCount == 1) "item?" else "items?",
+                )
+            } else {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    label = { Text("Title") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         },
         confirmButton = {
-            TextButton(onClick = { onRename(value); onDismiss() }) { Text("Save") }
+            if (confirmingDelete) {
+                TextButton(onClick = { onDelete(); onDismiss() }) { Text("Delete") }
+            } else {
+                TextButton(onClick = { onRename(value); onDismiss() }) { Text("Save") }
+            }
         },
         dismissButton = {
-            TextButton(onClick = { onDelete(); onDismiss() }) { Text("Delete") }
+            if (confirmingDelete) {
+                TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") }
+            } else {
+                TextButton(onClick = { confirmingDelete = true }) { Text("Delete") }
+            }
         },
     )
 }
@@ -4875,6 +4919,8 @@ In `HomeScreen.kt`:
 
 1. Create `val editController = remember { EditModeController() }`.
 2. Track the dragging item's absolute Y with a `var dragY by remember { mutableFloatStateOf(0f) }`.
+   The X is not tracked: the trash zone is hit-tested with the whole pointer
+   offset, so a separate X would be dead state.
 3. Each `LabelRow` in the list gets a `Modifier.onGloballyPositioned` that records its bounds:
 
 ```kotlin
@@ -4900,14 +4946,12 @@ In `HomeScreen.kt`:
     detectDragGesturesAfterLongPress(
         onDragStart = { offset ->
             editController.startDrag(entry.item.id)
-            dragX = rowOrigin.x + offset.x
             dragY = rowOrigin.y + offset.y
             overTrash = false
         },
         onDrag = { change, _ ->
             change.consume()
             val finger = rowOrigin + change.position
-            dragX = finger.x
             dragY = finger.y
             overTrash = trashBounds?.contains(finger) == true
             if (overTrash) {
@@ -5048,6 +5092,109 @@ The indicator is drawn inside the `Box` that wraps the list, positioned with
 `offset` so it floats over the rows.
 
 The arithmetic lives in a pure function so it can be tested without a device:
+
+9. Removing an item is **undoable**. The spec asks for a snackbar with an
+   Undo action, and a drop on the trash zone is easy to do by accident. Keep
+   the removed item and the slot it came from, and put it back if the user
+   taps Undo:
+
+```kotlin
+val snackbarHostState = remember { SnackbarHostState() }
+val scope = rememberCoroutineScope()
+
+fun removeItemWithUndo(itemId: String) {
+    val doc = viewModel.document.value
+    val section = doc.sections.firstOrNull { s -> s.items.any { it.id == itemId } }
+        ?: return
+    val index = section.items.indexOfFirst { it.id == itemId }
+    val item = section.items[index]
+    viewModel.update { it.removeItem(itemId) }
+    scope.launch {
+        val result = snackbarHostState.showSnackbar(
+            message = "Removed ${item.label ?: item.packageName}",
+            actionLabel = "Undo",
+            duration = SnackbarDuration.Short,
+        )
+        if (result == SnackbarResult.ActionPerformed) {
+            viewModel.update { it.addItem(item, section.id, index) }
+        }
+    }
+}
+```
+
+Both removal paths use it — the trash-zone drop and the editor's Remove
+button:
+
+```kotlin
+fun commitDrop(itemId: String) {
+    if (overTrash) {
+        removeItemWithUndo(itemId)
+        editController.endDrag()
+        return
+    }
+    when (val target = editController.endDrag()) {
+        is DragTarget.InSection -> viewModel.update { doc ->
+            doc.moveItem(itemId, target.sectionId, target.index)
+        }
+        is DragTarget.PreviousSection -> viewModel.update { doc ->
+            doc.moveItem(
+                itemId,
+                target.sectionId,
+                doc.sectionById(target.sectionId)?.items?.size ?: 0,
+            )
+        }
+        null -> Unit
+    }
+}
+```
+
+And host the snackbar in the root `Box`, above the trash zone:
+
+```kotlin
+SnackbarHost(
+    hostState = snackbarHostState,
+    modifier = Modifier
+        .align(Alignment.BottomCenter)
+        .padding(bottom = 104.dp),
+)
+```
+
+10. Wire the editor sheets. They sit on top of everything else:
+
+```kotlin
+editingEntry?.let { entry ->
+    ItemEditorSheet(
+        entry = entry,
+        sections = document.sections.map { it.id to it.title },
+        onRename = { label ->
+            viewModel.update { doc -> doc.renameItem(entry.item.id, label) }
+        },
+        onMoveToSection = { sectionId ->
+            viewModel.update { doc ->
+                doc.moveItem(
+                    entry.item.id,
+                    sectionId,
+                    doc.sectionById(sectionId)?.items?.size ?: 0,
+                )
+            }
+        },
+        onRemove = { removeItemWithUndo(entry.item.id) },
+        onDismiss = { editingEntry = null },
+    )
+}
+
+editingSection?.let { section ->
+    SectionEditorSheet(
+        title = section.title,
+        itemCount = section.items.size,
+        onRename = { title ->
+            viewModel.update { doc -> doc.renameSection(section.id, title) }
+        },
+        onDelete = { viewModel.update { doc -> doc.removeSection(section.id) } },
+        onDismiss = { editingSection = null },
+    )
+}
+```
 
 ```kotlin
 /**
