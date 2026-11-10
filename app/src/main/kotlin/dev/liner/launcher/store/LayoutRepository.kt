@@ -2,6 +2,7 @@ package dev.liner.launcher.store
 
 import dev.liner.launcher.model.DocumentCodec
 import dev.liner.launcher.model.LayoutDocument
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +55,10 @@ class LayoutRepository(private val store: DocumentStore) {
                 try {
                     store.write(DocumentCodec.encode(pending.document))
                     _writeFailed.value = false
+                } catch (e: CancellationException) {
+                    // Never swallow cancellation — it must propagate so the
+                    // writer shuts down with the rest of its scope.
+                    throw e
                 } catch (_: Throwable) {
                     // Throwable here, unlike the model layer's Exception: this
                     // is a long-lived writer coroutine, and letting an Error
@@ -85,6 +90,10 @@ class LayoutRepository(private val store: DocumentStore) {
         val raw = try {
             store.read()
         } catch (_: Throwable) {
+            // The read itself failed — that is not the same as "nothing
+            // stored", and the user's layout must not be reported as if it
+            // had never existed.
+            _loadFailed.value = true
             null
         }
 
@@ -104,6 +113,8 @@ class LayoutRepository(private val store: DocumentStore) {
             _loadFailed.value = true
             _document.value = LayoutDocument()
         } else {
+            recoveredPayload = null
+            _loadFailed.value = false
             _document.value = decoded
         }
     }

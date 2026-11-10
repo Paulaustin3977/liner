@@ -4,6 +4,7 @@ import dev.liner.launcher.model.DocumentCodec
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.addSection
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -45,6 +46,43 @@ class LayoutRepositoryTest {
     fun `a readable payload does not report a failure`() = runTest {
         val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1"))))
         val repository = LayoutRepository(InMemoryDocumentStore(stored))
+        repository.load()
+
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
+    }
+
+    @Test
+    fun `a failed read is reported rather than treated as an empty store`() = runTest {
+        val store = object : DocumentStore {
+            override suspend fun read(): String? = throw IllegalStateException("disk error")
+            override suspend fun write(json: String) = Unit
+        }
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        assertEquals(LayoutDocument(), repository.document.value)
+        assertTrue(repository.loadFailed.value)
+    }
+
+    @Test
+    fun `an empty store does not report a failure`() = runTest {
+        val repository = LayoutRepository(InMemoryDocumentStore(null))
+        repository.load()
+
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
+    }
+
+    @Test
+    fun `a later successful load clears an earlier failure`() = runTest {
+        val store = InMemoryDocumentStore("{not json")
+        val repository = LayoutRepository(store)
+        repository.load()
+        assertTrue(repository.loadFailed.value)
+        assertEquals("{not json", repository.recoveredPayload)
+
+        store.write(DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1")))))
         repository.load()
 
         assertFalse(repository.loadFailed.value)
@@ -94,6 +132,21 @@ class LayoutRepositoryTest {
         repository.awaitPendingWrite()
         assertFalse(repository.writeFailed.value)
         assertEquals(1, store.written.size)
+    }
+
+    @Test
+    fun `a cancelled write is not reported as a write failure`() = runTest {
+        val store = object : DocumentStore {
+            override suspend fun read(): String? = null
+            override suspend fun write(json: String): Unit = throw CancellationException("cancelled")
+        }
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        repository.update { it.addSection("s1") }
+        repository.awaitPendingWrite()
+
+        assertFalse(repository.writeFailed.value)
     }
 
     @Test
