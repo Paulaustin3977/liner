@@ -1598,6 +1598,7 @@ package dev.liner.launcher.model
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -2161,6 +2162,7 @@ git commit -m "feat(model): add pure drag-target computation"
 ```kotlin
 package dev.liner.launcher.store
 
+import dev.liner.launcher.model.DocumentCodec
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.addSection
@@ -2188,6 +2190,26 @@ class LayoutRepositoryTest {
         repository.load()
 
         assertEquals(LayoutDocument(), repository.document.value)
+    }
+
+    @Test
+    fun `a corrupt payload is reported rather than silently discarded`() = runTest {
+        val repository = LayoutRepository(InMemoryDocumentStore("{not json"))
+        repository.load()
+
+        assertEquals(LayoutDocument(), repository.document.value)
+        assertTrue(repository.loadFailed.value)
+        assertEquals("{not json", repository.recoveredPayload)
+    }
+
+    @Test
+    fun `a readable payload does not report a failure`() = runTest {
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1"))))
+        val repository = LayoutRepository(InMemoryDocumentStore(stored))
+        repository.load()
+
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
     }
 
     @Test
@@ -2277,6 +2299,7 @@ interface DocumentStore {
 
 /** An in-memory [DocumentStore]. Used by tests and by the import preview flow. */
 class InMemoryDocumentStore(initial: String? = null) : DocumentStore {
+    @Volatile
     private var content: String? = initial
 
     override suspend fun read(): String? = content
@@ -2333,6 +2356,15 @@ class LayoutRepository(private val store: DocumentStore) {
     private val _writeFailed = MutableStateFlow(false)
     val writeFailed: StateFlow<Boolean> = _writeFailed.asStateFlow()
 
+    private val _loadFailed = MutableStateFlow(false)
+
+    /** True when the stored layout could not be read and the defaults were used instead. */
+    val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
+
+    /** The unreadable payload that [load] fell back from, kept for logging. */
+    var recoveredPayload: String? = null
+        private set
+
     init {
         scope.launch {
             for (pending in writes) {
@@ -2340,6 +2372,10 @@ class LayoutRepository(private val store: DocumentStore) {
                     store.write(DocumentCodec.encode(pending.document))
                     _writeFailed.value = false
                 } catch (_: Throwable) {
+                    // Throwable here, unlike the model layer's Exception: this
+                    // is a long-lived writer coroutine, and letting an Error
+                    // escape would kill it — after which every later edit would
+                    // silently stop being persisted.
                     _writeFailed.value = true
                 } finally {
                     pending.done.complete(Unit)
@@ -2348,17 +2384,44 @@ class LayoutRepository(private val store: DocumentStore) {
         }
     }
 
-    /** Reads the stored document. Falls back to defaults when it cannot be read. */
+    /**
+     * Reads the stored document.
+     *
+     * This is the recovery boundary at app start, so it catches Throwable
+     * rather than Exception: a pathological payload (deeply nested JSON
+     * raising StackOverflowError) must not crash the launcher, which the spec
+     * explicitly forbids.
+     *
+     * When the stored payload cannot be decoded the document falls back to
+     * defaults, but the failure is *reported* rather than silent: [loadFailed]
+     * goes true and the original payload is kept in [recoveredPayload] so the
+     * platform layer can log it and the UI can tell the user their layout was
+     * reset instead of quietly losing it.
+     */
     suspend fun load() {
         val raw = try {
             store.read()
         } catch (_: Throwable) {
             null
         }
-        _document.value = try {
-            raw?.let { DocumentCodec.decode(it) } ?: LayoutDocument()
-        } catch (_: Exception) {
-            LayoutDocument()
+
+        if (raw == null) {
+            _document.value = LayoutDocument()
+            return
+        }
+
+        val decoded = try {
+            DocumentCodec.decode(raw)
+        } catch (_: Throwable) {
+            null
+        }
+
+        if (decoded == null) {
+            recoveredPayload = raw
+            _loadFailed.value = true
+            _document.value = LayoutDocument()
+        } else {
+            _document.value = decoded
         }
     }
 
@@ -2398,7 +2461,7 @@ class DataStoreDocumentStore(context: Context) : DocumentStore {
 
     private val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob()),
-        produceFile = { context.preferencesDataStoreFile(FILE_NAME) },
+        produceFile = { context.applicationContext.preferencesDataStoreFile(FILE_NAME) },
     )
 
     override suspend fun read(): String? = dataStore.data.first()[KEY]
@@ -2418,7 +2481,7 @@ class DataStoreDocumentStore(context: Context) : DocumentStore {
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
 
-Expected: `BUILD SUCCESSFUL`, 6 tests, 0 failures.
+Expected: `BUILD SUCCESSFUL`, 8 tests, 0 failures.
 
 - [ ] **Step 7: Commit**
 
@@ -2946,7 +3009,7 @@ git commit -m "feat(platform): add app launching, default-home detection, wallpa
 **Interfaces:**
 - Consumes: Task 4's `AppCatalog`/`StyleResolver`/`ClockFormatter`, Task 6's `LayoutRepository`, Task 8's `LinerTheme`.
 - Produces:
-  - `class HomeViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val homeEntries: StateFlow<List<HomeEntry>>`, `val writeFailed: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
+  - `class HomeViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val homeEntries: StateFlow<List<HomeEntry>>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
   - `@Composable fun HomeScreen(viewModel: HomeViewModel, onLaunch: (InstalledApp) -> Unit, onOpenSettings: (String?) -> Unit)`
   - `@Composable fun BackgroundLayer(spec: BackgroundSpec, wallpaper: Drawable?)`
   - `@Composable fun LabelRow(text: String, style: ResolvedStyle, alignment: Alignment.Horizontal, icon: ImageBitmap?, iconSizeDp: Int, enabled: Boolean)`
@@ -3252,6 +3315,8 @@ class HomeViewModel(
 
     val writeFailed: StateFlow<Boolean> = repository.writeFailed
 
+    val loadFailed: StateFlow<Boolean> = repository.loadFailed
+
     private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
     val installedApps: StateFlow<List<InstalledApp>> = _installedApps
 
@@ -3338,6 +3403,20 @@ fun HomeScreen(
 ) {
     val document by viewModel.document.collectAsStateWithLifecycle()
     val entries by viewModel.homeEntries.collectAsStateWithLifecycle()
+    val loadFailed by viewModel.loadFailed.collectAsStateWithLifecycle()
+
+    // The stored layout could not be read. Tell the user once, rather than
+    // silently showing them a default screen they never configured.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.LaunchedEffect(loadFailed) {
+        if (loadFailed) {
+            android.widget.Toast.makeText(
+                context,
+                "Your saved layout could not be read, so Liner started with defaults.",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
     val theme = document.theme
     val systemTextColor = MaterialTheme.colorScheme.onBackground
 

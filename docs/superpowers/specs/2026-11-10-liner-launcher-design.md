@@ -275,8 +275,9 @@ The drag does **not** reorder the list live under the finger. Instead:
 1. The dragged item stays in its slot but renders faded, and a horizontal
    insertion indicator line animates to the slot the item would land in.
 2. The target is computed by pure function `DragTargeting.computeTarget(dragY,
-   bounds, draggedId, sectionOrder)`, where `bounds` is the ordered list of
-   on-screen item rectangles in root coordinates.
+   bounds, draggedId, sectionOrder)`, where `bounds` is the list of on-screen
+   item rectangles in root coordinates — its order does not matter, the
+   computation sorts by vertical position.
 3. On release the reorder is committed in one `moveItem` call.
 
 This keeps the gesture maths out of the rendering layer, makes it unit-
