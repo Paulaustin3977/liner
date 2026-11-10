@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -44,14 +45,38 @@ class HomeViewModel(
             AppCatalog.homeEntries(doc, apps.associateBy { it.packageName })
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /**
+     * Whether the installed-app list has finished its first query. Until it
+     * has, an empty list means "not loaded yet", not "no apps" — the UI must
+     * not flash the empty state or grey out every row during that window.
+     */
+    private val _appsLoaded = MutableStateFlow(false)
+    val appsLoaded: StateFlow<Boolean> = _appsLoaded.asStateFlow()
+
+    /** Whether the saved document has finished its first load. */
+    private val _documentLoaded = MutableStateFlow(false)
+    val documentLoaded: StateFlow<Boolean> = _documentLoaded.asStateFlow()
+
     init {
-        viewModelScope.launch { repository.load() }
+        viewModelScope.launch {
+            try {
+                repository.load()
+            } finally {
+                _documentLoaded.value = true
+            }
+        }
         refreshApps()
     }
 
     fun refreshApps() {
         viewModelScope.launch(Dispatchers.IO) {
-            _installedApps.value = appsRepository.loadInstalledApps()
+            try {
+                _installedApps.value = appsRepository.loadInstalledApps()
+            } finally {
+                // Even a failed query means "we have looked" — without this
+                // the UI would wait forever before showing its states.
+                _appsLoaded.value = true
+            }
         }
     }
 

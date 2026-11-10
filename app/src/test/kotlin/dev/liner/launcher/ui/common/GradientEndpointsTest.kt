@@ -1,6 +1,7 @@
 package dev.liner.launcher.ui.common
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -13,57 +14,51 @@ import org.junit.Test
  */
 class GradientEndpointsTest {
 
-    private val tolerance = 1e-6f
-
     @Test
-    fun `angle zero runs from the top to the bottom`() {
-        val (start, end) = gradientEndpoints(0)
-
-        assertEquals(0.5f, start.x, tolerance)
-        assertEquals(0f, start.y, tolerance)
-        assertEquals(0.5f, end.x, tolerance)
-        assertEquals(1f, end.y, tolerance)
+    fun `angle zero runs top to bottom`() {
+        val (start, end) = gradientEndpoints(angleDegrees = 0, width = 100f, height = 200f)
+        assertEquals(start.x, end.x, 0.001f)
+        assertTrue("the gradient must start at the top", start.y < end.y)
     }
 
     @Test
-    fun `angle ninety runs from the left to the right`() {
-        val (start, end) = gradientEndpoints(90)
-
-        assertEquals(0f, start.x, tolerance)
-        assertEquals(0.5f, start.y, tolerance)
-        assertEquals(1f, end.x, tolerance)
-        assertEquals(0.5f, end.y, tolerance)
+    fun `angle ninety runs left to right`() {
+        val (start, end) = gradientEndpoints(angleDegrees = 90, width = 100f, height = 200f)
+        assertEquals(start.y, end.y, 0.001f)
+        assertTrue("the gradient must start at the left", start.x < end.x)
     }
 
     @Test
-    fun `angle one hundred and eighty runs from the bottom to the top`() {
-        val (start, end) = gradientEndpoints(180)
-
-        assertEquals(0.5f, start.x, tolerance)
-        assertEquals(1f, start.y, tolerance)
-        assertEquals(0.5f, end.x, tolerance)
-        assertEquals(0f, end.y, tolerance)
+    fun `angle one eighty runs bottom to top`() {
+        val (start, end) = gradientEndpoints(angleDegrees = 180, width = 100f, height = 200f)
+        assertEquals(start.x, end.x, 0.001f)
+        assertTrue("the gradient must start at the bottom", start.y > end.y)
     }
 
     @Test
-    fun `the line always passes through the centre of the screen`() {
-        for (angle in listOf(0, 45, 90, 135, 180, 225, 270, 315)) {
-            val (start, end) = gradientEndpoints(angle)
-
-            assertEquals("midpoint x at $angle", 0.5f, (start.x + end.x) / 2f, tolerance)
-            assertEquals("midpoint y at $angle", 0.5f, (start.y + end.y) / 2f, tolerance)
-        }
+    fun `the gradient passes through the centre`() {
+        val (start, end) = gradientEndpoints(angleDegrees = 37, width = 100f, height = 200f)
+        assertEquals(50f, (start.x + end.x) / 2f, 0.001f)
+        assertEquals(100f, (start.y + end.y) / 2f, 0.001f)
     }
 
     @Test
-    fun `the line turns clockwise as the angle grows`() {
-        // The direction of the line, from `from` towards `to`.
-        val (topToBottomStart, topToBottomEnd) = gradientEndpoints(0)
-        val (leftToRightStart, leftToRightEnd) = gradientEndpoints(90)
-        val (bottomToTopStart, bottomToTopEnd) = gradientEndpoints(180)
+    fun `the gradient turns clockwise`() {
+        // The end point must sit right of and below the start point at an
+        // intermediate angle. The cardinal cases above cannot catch a
+        // flipped sign, which would mirror every non-cardinal angle.
+        val (start, end) = gradientEndpoints(angleDegrees = 45, width = 100f, height = 200f)
+        assertTrue("the gradient must turn to the right", end.x > start.x)
+        assertTrue("the gradient must turn downwards", end.y > start.y)
+    }
 
-        assertEquals(1f, topToBottomEnd.y - topToBottomStart.y, tolerance)
-        assertEquals(1f, leftToRightEnd.x - leftToRightStart.x, tolerance)
-        assertEquals(1f, bottomToTopStart.y - bottomToTopEnd.y, tolerance)
+    @Test
+    fun `the angle is preserved on a wide screen`() {
+        // Scaling the two axes independently would skew the angle; the
+        // endpoints must keep the requested direction on any aspect ratio.
+        val (start, end) = gradientEndpoints(angleDegrees = 45, width = 400f, height = 100f)
+        val dx = end.x - start.x
+        val dy = end.y - start.y
+        assertEquals(1f, dx / dy, 0.01f)
     }
 }

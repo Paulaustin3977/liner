@@ -1,6 +1,6 @@
 package dev.liner.launcher.ui.home
 
-import android.graphics.drawable.Drawable
+import android.graphics.Bitmap
 import android.text.format.DateFormat
 import android.widget.Toast
 import androidx.compose.foundation.clickable
@@ -42,7 +42,6 @@ import dev.liner.launcher.model.ThemeTokens
 import dev.liner.launcher.ui.common.BackgroundLayer
 import dev.liner.launcher.ui.common.LabelRow
 import dev.liner.launcher.ui.common.SectionHeaderRow
-import dev.liner.launcher.ui.common.toColor
 import kotlinx.coroutines.delay
 import java.time.ZoneId
 
@@ -55,7 +54,7 @@ import java.time.ZoneId
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel,
-    wallpaper: Drawable?,
+    wallpaper: Bitmap?,
     iconCache: IconCache,
     onLaunch: (HomeEntry) -> Unit,
     onOpenSettings: (String?) -> Unit,
@@ -65,8 +64,15 @@ fun HomeScreen(
     val entries by viewModel.homeEntries.collectAsStateWithLifecycle()
     val loadFailed by viewModel.loadFailed.collectAsStateWithLifecycle()
     val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
+    val appsLoaded by viewModel.appsLoaded.collectAsStateWithLifecycle()
+    val documentLoaded by viewModel.documentLoaded.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
+
+    // Until the document and the app query have both answered, an empty list
+    // means "not loaded yet" rather than "no apps" — showing the empty state
+    // then would flash it on every cold start.
+    val stillLoading = !appsLoaded || !documentLoaded
 
     // The stored layout could not be read. Tell the user once, rather than
     // silently showing them a default screen they never configured, and hand
@@ -96,6 +102,10 @@ fun HomeScreen(
 
     val theme = document.theme
     val systemTextColor = MaterialTheme.colorScheme.onBackground
+    val systemBackgroundColor = MaterialTheme.colorScheme.background
+    // The clock takes the theme's text colour, resolved through the same
+    // path as every other style decision.
+    val chromeColor = StyleResolver.resolveTextColor(theme)?.let { Color(it) } ?: systemTextColor
 
     val horizontalAlignment = when (theme.alignment) {
         "center" -> Alignment.CenterHorizontally
@@ -104,7 +114,12 @@ fun HomeScreen(
     }
 
     Box(Modifier.fillMaxSize()) {
-        BackgroundLayer(spec = theme.background, wallpaper = wallpaper, systemTextColor = systemTextColor)
+        BackgroundLayer(
+            spec = theme.background,
+            wallpaper = wallpaper,
+            systemTextColor = systemTextColor,
+            systemBackgroundColor = systemBackgroundColor,
+        )
 
         Column(
             Modifier
@@ -117,7 +132,7 @@ fun HomeScreen(
                     vertical = theme.screenPaddingVdp.dp,
                 ),
         ) {
-            ClockDateHeader(theme, systemTextColor)
+            ClockDateHeader(theme, chromeColor)
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -125,21 +140,26 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(theme.itemSpacingDp.dp),
             ) {
                 document.sections.forEachIndexed { sectionIndex, section ->
-                    val title = section.title
-                    if (title != null) {
+                    val sectionEntries = entries
+                        .filter { it.sectionId == section.id }
+                        .distinctBy { it.item.id }
+                    // An empty section keeps no header — the spec keeps it as
+                    // an untitled group, and a blank title is no title at all.
+                    val title = section.title?.takeIf { it.isNotBlank() }
+                    if (title != null && sectionEntries.isNotEmpty()) {
                         // The section index keeps the key unique even when a
                         // hand-edited layout repeats a section id.
                         item(key = "header-$sectionIndex") {
                             SectionHeaderRow(
                                 title = title,
                                 style = StyleResolver.resolveSectionHeaderStyle(theme),
-                                uppercase = theme.sectionTitleUppercase,
-                                showRule = theme.sectionTitleRule,
+                                uppercase = StyleResolver.resolveSectionTitleUppercase(theme),
+                                showRule = StyleResolver.resolveSectionTitleRule(theme),
                             )
                         }
                     }
                     items(
-                        items = entries.filter { it.sectionId == section.id }.distinctBy { it.item.id },
+                        items = sectionEntries,
                         key = { "$sectionIndex:${it.item.id}" },
                     ) { entry ->
                         // Icons are opt-in: the home screen is icon-free by
@@ -155,8 +175,11 @@ fun HomeScreen(
                             style = StyleResolver.resolveItemStyle(theme, entry.item.style),
                             alignment = horizontalAlignment,
                             icon = icon,
-                            iconSizeDp = theme.iconSizeDp,
-                            enabled = entry.available,
+                            iconSizeDp = StyleResolver.resolveIconSizeDp(theme),
+                            // Until the app query has answered, "not available"
+                            // only means "not looked up yet" — greying the row
+                            // would report an installed app as missing.
+                            enabled = entry.available || !appsLoaded,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onLaunch(entry) },
@@ -166,7 +189,7 @@ fun HomeScreen(
             }
         }
 
-        if (entries.isEmpty()) {
+        if (entries.isEmpty() && !stillLoading) {
             // Nothing chosen yet: point the user at the Apps tab rather than
             // showing a blank screen. It is drawn last so the button is the
             // top-most element and the tap reaches it.
@@ -187,7 +210,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun ClockDateHeader(theme: ThemeTokens, systemTextColor: Color) {
+private fun ClockDateHeader(theme: ThemeTokens, textColor: Color) {
     if (theme.clockStyle == "hidden") return
 
     val context = LocalContext.current
@@ -211,17 +234,15 @@ private fun ClockDateHeader(theme: ThemeTokens, systemTextColor: Color) {
     val clockSize = if (theme.clockStyle == "large") 64f else 24f
     val dateSize = if (theme.clockStyle == "large") 18f else 14f
     val clockWeight = if (theme.clockStyle == "large") FontWeight.Light else FontWeight.Normal
-    // The clock follows the text colour of the theme.
-    val color = theme.textColor.toColor(systemTextColor)
 
     Column(Modifier.fillMaxWidth()) {
         Text(
             text = ClockFormatter.formatTime(now, zone, use24Hour),
-            style = TextStyle(fontSize = clockSize.sp, fontWeight = clockWeight, color = color),
+            style = TextStyle(fontSize = clockSize.sp, fontWeight = clockWeight, color = textColor),
         )
         val date = ClockFormatter.formatDate(now, zone, theme.dateStyle)
         if (date != null) {
-            Text(text = date, style = TextStyle(fontSize = dateSize.sp, color = color))
+            Text(text = date, style = TextStyle(fontSize = dateSize.sp, color = textColor))
         }
         Spacer(Modifier.height(16.dp))
     }

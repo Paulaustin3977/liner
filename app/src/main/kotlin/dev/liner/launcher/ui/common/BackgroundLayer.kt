@@ -1,14 +1,11 @@
 package dev.liner.launcher.ui.common
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.drawable.Drawable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -18,54 +15,56 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import dev.liner.launcher.model.BackgroundSpec
 import dev.liner.launcher.model.ColorSpec
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
  * Paints the screen background behind the home list.
  *
- * [systemTextColor] is the colour of the current light/dark configuration. It
- * is the fallback for a "follow system" colour, so a background that follows
- * the system stays legible against the system's text colour.
+ * [systemBackgroundColor] is the background of the current light/dark
+ * configuration and is the fallback for a "follow system" background colour.
+ * A background must never fall back to the *text* colour: that would paint
+ * the label colour itself as the background and leave the labels unreadable.
+ *
+ * [systemTextColor] is the label colour of the same configuration. The
+ * background never paints it — the screen resolves the chrome colour from
+ * the theme through the resolver — but it belongs to this layer's contract,
+ * so a caller can pass the pair it already has.
  */
 @Composable
 fun BackgroundLayer(
     spec: BackgroundSpec,
-    wallpaper: Drawable?,
+    wallpaper: Bitmap?,
     systemTextColor: Color,
+    systemBackgroundColor: Color,
     modifier: Modifier = Modifier,
 ) {
-    // Rasterising the wallpaper costs a full-size bitmap, so it is done once
-    // per wallpaper instead of on every recomposition.
-    val wallpaperBitmap = remember(wallpaper) {
-        wallpaper?.toBitmap(width = 1080, height = 1920)?.asImageBitmap()
-    }
-
     Box(modifier = modifier.fillMaxSize()) {
         when (spec) {
             is BackgroundSpec.Solid -> {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .background(spec.color.toColor(systemTextColor)),
+                        .background(spec.color.toColor(fallback = systemBackgroundColor)),
                 )
             }
 
             is BackgroundSpec.Gradient -> {
-                val from = spec.from.toColor(systemTextColor)
-                val to = spec.to.toColor(systemTextColor)
+                val from = spec.from.toColor(fallback = systemBackgroundColor)
+                val to = spec.to.toColor(fallback = systemBackgroundColor)
                 Box(
                     Modifier
                         .fillMaxSize()
                         // The brush is painted over the measured size, so the
                         // gradient covers the whole screen whatever its angle.
                         .drawBehind {
-                            val (start, end) = gradientEndpoints(spec.angleDegrees)
+                            val (start, end) = gradientEndpoints(spec.angleDegrees, size.width, size.height)
                             drawRect(
                                 brush = Brush.linearGradient(
                                     colors = listOf(from, to),
-                                    start = Offset(start.x * size.width, start.y * size.height),
-                                    end = Offset(end.x * size.width, end.y * size.height),
+                                    start = start,
+                                    end = end,
                                 ),
                             )
                         },
@@ -73,9 +72,9 @@ fun BackgroundLayer(
             }
 
             is BackgroundSpec.Wallpaper -> {
-                if (wallpaperBitmap != null) {
+                if (wallpaper != null) {
                     Image(
-                        bitmap = wallpaperBitmap,
+                        bitmap = wallpaper.asImageBitmap(),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
@@ -98,34 +97,41 @@ fun BackgroundLayer(
 }
 
 /**
- * The gradient line for [angleDegrees], in normalised screen coordinates:
- * (0,0) is the top-left of the screen and (1,1) the bottom-right.
+ * The endpoints of a linear gradient whose direction is [angleDegrees]
+ * measured clockwise from vertical: 0 runs top-to-bottom, 90 runs
+ * left-to-right, 180 runs bottom-to-top.
  *
- * The angle is measured clockwise from vertical, so 0 runs top-to-bottom
- * (`from` at the top, `to` at the bottom), 90 runs left-to-right and 180
- * runs bottom-to-top. The line always passes through the centre of the
- * screen, so the two ends are half a screen apart in each direction.
+ * The line is scaled isotropically — its length is the CSS "magic corner"
+ * value `|w·sinθ| + |h·cosθ|` — so the on-screen direction is exactly the
+ * requested angle on any aspect ratio. Scaling the two axes independently
+ * would skew every non-cardinal angle.
+ *
+ * The endpoints are in pixels, because that is what
+ * [Brush.linearGradient] expects.
  */
-internal fun gradientEndpoints(angleDegrees: Int): Pair<Offset, Offset> {
+internal fun gradientEndpoints(
+    angleDegrees: Int,
+    width: Float,
+    height: Float,
+): Pair<Offset, Offset> {
     val radians = Math.toRadians(angleDegrees.toDouble())
     val dx = sin(radians).toFloat()
     val dy = cos(radians).toFloat()
-    return Offset(0.5f - dx * 0.5f, 0.5f - dy * 0.5f) to
-        Offset(0.5f + dx * 0.5f, 0.5f + dy * 0.5f)
+    val length = abs(width * dx) + abs(height * dy)
+    val halfX = dx * length / 2f
+    val halfY = dy * length / 2f
+    val cx = width / 2f
+    val cy = height / 2f
+    return Offset(cx - halfX, cy - halfY) to Offset(cx + halfX, cy + halfY)
 }
 
-/** Maps a [ColorSpec] to a concrete colour, resolving "follow system" to [fallback]. */
+/**
+ * Maps a [ColorSpec] to a concrete colour, resolving "follow system" to
+ * [fallback]. A background must fall back to the *background* colour, not
+ * the text colour — falling back to the text colour would paint a
+ * near-white label colour as the background and make the text unreadable.
+ */
 fun ColorSpec.toColor(fallback: Color): Color = when (this) {
     is ColorSpec.Solid -> Color(argb)
     ColorSpec.FollowSystem -> fallback
-}
-
-private fun Drawable.toBitmap(width: Int, height: Int): Bitmap {
-    val w = if (intrinsicWidth > 0) intrinsicWidth else width
-    val h = if (intrinsicHeight > 0) intrinsicHeight else height
-    val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    setBounds(0, 0, w, h)
-    draw(canvas)
-    return bitmap
 }

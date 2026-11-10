@@ -3548,7 +3548,7 @@ Expected: `BUILD SUCCESSFUL`, 2 tests, 0 failures. This test pins the contract t
 ```kotlin
 package dev.liner.launcher.ui.common
 
-import android.graphics.drawable.Drawable
+import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -3561,8 +3561,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
-import kotlin.math.cos
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
@@ -3572,7 +3570,7 @@ import dev.liner.launcher.model.ColorSpec
 @Composable
 fun BackgroundLayer(
     spec: BackgroundSpec,
-    wallpaper: Drawable?,
+    wallpaper: Bitmap?,
     systemTextColor: Color,
     systemBackgroundColor: Color,
     modifier: Modifier = Modifier,
@@ -3814,6 +3812,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -3846,17 +3845,19 @@ class HomeViewModel(
      * has, an empty list means "not loaded yet", not "no apps" — the UI must
      * not flash the empty state or grey out every row during that window.
      */
-    val appsLoaded: StateFlow<Boolean> = MutableStateFlow(false)
+    private val _appsLoaded = MutableStateFlow(false)
+    val appsLoaded: StateFlow<Boolean> = _appsLoaded.asStateFlow()
 
     /** Whether the saved document has finished its first load. */
-    val documentLoaded: StateFlow<Boolean> = MutableStateFlow(false)
+    private val _documentLoaded = MutableStateFlow(false)
+    val documentLoaded: StateFlow<Boolean> = _documentLoaded.asStateFlow()
 
     init {
         viewModelScope.launch {
             try {
                 repository.load()
             } finally {
-                documentLoaded.value = true
+                _documentLoaded.value = true
             }
         }
         refreshApps()
@@ -3869,7 +3870,7 @@ class HomeViewModel(
             } finally {
                 // Even a failed query means "we have looked" — without this
                 // the UI would wait forever before showing its states.
-                appsLoaded.value = true
+                _appsLoaded.value = true
             }
         }
     }
@@ -3894,7 +3895,7 @@ class HomeViewModel(
 ```kotlin
 package dev.liner.launcher.ui.home
 
-import android.graphics.drawable.Drawable
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -4062,7 +4063,10 @@ fun HomeScreen(
                             alignment = horizontalAlignment,
                             icon = icon,
                             iconSizeDp = StyleResolver.resolveIconSizeDp(theme),
-                            enabled = entry.available,
+                            // Until the app query has answered, "not available"
+                            // only means "not looked up yet" — greying the row
+                            // would report an installed app as missing.
+                            enabled = entry.available || !appsLoaded,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onLaunch(entry) },
@@ -4118,13 +4122,22 @@ Replace `platform/LauncherActivity.kt` with:
 ```kotlin
 package dev.liner.launcher.platform
 
+import android.graphics.Bitmap
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
 import dev.liner.launcher.ui.home.HomeScreen
 import dev.liner.launcher.ui.home.HomeViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class LauncherActivity : ComponentActivity() {
 
@@ -4134,18 +4147,38 @@ class LauncherActivity : ComponentActivity() {
         HomeViewModel.factory(container.repository, container.appsRepository)
     }
 
+    /**
+     * The wallpaper, published once it has been rasterised off the main
+     * thread. It is null until then, and the screen falls back to a plain
+     * background in the meantime.
+     */
+    private var wallpaperBitmap by mutableStateOf<Bitmap?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val wallpaper = WallpaperProvider.load(this)
+
+        // The wallpaper is rasterised off the main thread: a full-size
+        // wallpaper is tens of megabytes, and the allocation must not happen
+        // before the first frame is drawn.
+        lifecycleScope.launch(Dispatchers.IO) {
+            val bitmap = WallpaperProvider.loadBitmap(
+                context = applicationContext,
+                maxWidth = WALLPAPER_MAX_WIDTH,
+                maxHeight = WALLPAPER_MAX_HEIGHT,
+            )
+            withContext(Dispatchers.Main) {
+                wallpaperBitmap = bitmap
+            }
+        }
 
         setContent {
             LinerTheme {
                 HomeScreen(
                     viewModel = viewModel,
-                    wallpaper = wallpaper,
+                    wallpaper = wallpaperBitmap,
                     iconCache = container.iconCache,
-                    onLaunch = { entry -> launchEntry(entry.packageName) },
+                    onLaunch = { entry -> launchEntry(entry.item.packageName) },
                     onOpenSettings = { tab -> openSettings(tab) },
                     onRecoverLayout = { payload -> writeRecoveryLog(payload) },
                 )
@@ -4165,12 +4198,30 @@ class LauncherActivity : ComponentActivity() {
     }
 
     private fun launchEntry(packageName: String) {
-        val app = viewModel.installedApps.value.firstOrNull { it.packageName == packageName } ?: return
+        val app = viewModel.installedApps.value.firstOrNull { it.packageName == packageName }
+        if (app == null) {
+            // The app list has not been queried yet, so "not installed" is
+            // not something we know yet — saying so would report an app that
+            // *is* installed as missing.
+            if (!viewModel.appsLoaded.value) return
+            // The app is gone. The row is greyed out, and tapping it must not
+            // launch anything — it only says so.
+            Toast.makeText(this, "App not installed", Toast.LENGTH_SHORT).show()
+            return
+        }
         AppLauncher(this).launch(app)
     }
 
     private fun openSettings(tab: String?) {
         startActivity(SettingsActivity.intent(this, tab))
+    }
+
+    companion object {
+        // The wallpaper is only ever drawn as a background, so a screen-sized
+        // bitmap is enough — and it is a fraction of the memory a full-size
+        // wallpaper would cost.
+        private const val WALLPAPER_MAX_WIDTH = 1080
+        private const val WALLPAPER_MAX_HEIGHT = 1920
     }
 }
 ```
