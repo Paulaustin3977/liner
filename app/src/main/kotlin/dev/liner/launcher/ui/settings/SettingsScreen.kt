@@ -1,5 +1,6 @@
 package dev.liner.launcher.ui.settings
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -12,12 +13,14 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.liner.launcher.model.InstalledApp
 import dev.liner.launcher.model.LayoutDocument
@@ -39,10 +42,23 @@ fun SettingsScreen(
     document: LayoutDocument,
     installedApps: List<InstalledApp>,
     initialTab: String?,
+    writeFailed: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
 ) {
     val startIndex = remember(initialTab) { tabIndexFor(initialTab) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
+
+    // A failed save must not be silent.
+    val context = LocalContext.current
+    LaunchedEffect(writeFailed) {
+        if (writeFailed) {
+            Toast.makeText(
+                context,
+                "Your changes could not be saved. Try again.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Liner Settings") }) },

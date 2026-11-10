@@ -3,11 +3,9 @@ package dev.liner.launcher.platform
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.liner.launcher.ui.settings.SettingsScreen
@@ -31,22 +29,11 @@ class SettingsActivity : ComponentActivity() {
                 val apps by viewModel.installedApps.collectAsStateWithLifecycle()
                 val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
 
-                // A save that failed must not be silent — the user gets the
-                // same notice the home screen gives.
-                LaunchedEffect(writeFailed) {
-                    if (writeFailed) {
-                        Toast.makeText(
-                            this@SettingsActivity,
-                            "Your changes could not be saved. Try again.",
-                            Toast.LENGTH_LONG,
-                        ).show()
-                    }
-                }
-
                 SettingsScreen(
                     document = document,
                     installedApps = apps,
                     initialTab = initialTab,
+                    writeFailed = writeFailed,
                     onUpdate = viewModel::update,
                 )
             }
