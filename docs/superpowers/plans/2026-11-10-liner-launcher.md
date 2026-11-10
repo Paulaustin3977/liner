@@ -756,6 +756,56 @@ class DocumentCodecTest {
     }
 
     @Test
+    fun `every background and colour variant survives a round trip`() {
+        val backgrounds = listOf(
+            BackgroundSpec.Solid(ColorSpec.Solid(0xFF102030.toInt())),
+            BackgroundSpec.Gradient(
+                from = ColorSpec.Solid(0xFF000000.toInt()),
+                to = ColorSpec.FollowSystem,
+                angleDegrees = 45,
+            ),
+            BackgroundSpec.Wallpaper(dim = 0.5f),
+        )
+
+        backgrounds.forEach { background ->
+            val original = LayoutDocument(theme = ThemeTokens(background = background))
+
+            val decoded = DocumentCodec.decode(DocumentCodec.encode(original))
+
+            assertNotNull(decoded)
+            assertEquals(original, decoded)
+        }
+    }
+
+    @Test
+    fun `a hand written payload decodes to the expected document`() {
+        val json = """
+            {
+              "version": 1,
+              "sections": [
+                {
+                  "id": "s1",
+                  "title": "Daily",
+                  "items": [ { "id": "a", "packageName": "com.mail" } ]
+                }
+              ],
+              "theme": {
+                "background": { "type": "wallpaper", "dim": 0.5 },
+                "textColor": { "type": "system" }
+              }
+            }
+        """.trimIndent()
+
+        val decoded = DocumentCodec.decode(json)
+
+        assertNotNull(decoded)
+        assertEquals(BackgroundSpec.Wallpaper(0.5f), decoded!!.theme.background)
+        assertEquals(ColorSpec.FollowSystem, decoded.theme.textColor)
+        assertEquals("Daily", decoded.sections[0].title)
+        assertEquals("com.mail", decoded.sections[0].items[0].packageName)
+    }
+
+    @Test
     fun `ignores unknown fields for forward compatibility`() {
         val json = """{"version":1,"sections":[],"theme":{},"somethingNew":{"a":1}}"""
 
@@ -1007,7 +1057,11 @@ object DocumentCodec {
     fun decode(raw: String): LayoutDocument? = try {
         val decoded = json.decodeFromString<LayoutDocument>(raw)
         if (decoded.version > LayoutDocument.CURRENT_VERSION) null else migrate(decoded)
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
+        // Data errors only: malformed JSON, missing fields, an unknown
+        // discriminator. Deliberately not Throwable — an OutOfMemoryError or a
+        // bug inside migrate() must surface, not silently reset the user's
+        // layout to defaults.
         null
     }
 
@@ -1026,7 +1080,7 @@ export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspac
 $GRADLE :app:testDebugUnitTest --tests '*DocumentCodecTest*'
 ```
 
-Expected: `BUILD SUCCESSFUL`, 5 tests, 0 failures.
+Expected: `BUILD SUCCESSFUL`, 7 tests, 0 failures.
 
 - [ ] **Step 6: Commit**
 
@@ -2227,7 +2281,11 @@ class LayoutRepository(private val store: DocumentStore) {
         } catch (_: Throwable) {
             null
         }
-        _document.value = raw?.let { DocumentCodec.decode(it) } ?: LayoutDocument()
+        _document.value = try {
+            raw?.let { DocumentCodec.decode(it) } ?: LayoutDocument()
+        } catch (_: Exception) {
+            LayoutDocument()
+        }
     }
 
     fun update(transform: (LayoutDocument) -> LayoutDocument) {
