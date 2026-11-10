@@ -28,6 +28,7 @@ Every task below implicitly includes these. Values are copied verbatim from the 
 - Layout document is persisted as one JSON blob in DataStore Preferences, key `layout_document`.
 - The launcher declares `QUERY_ALL_PACKAGES` under the standard launcher (CATEGORY_HOME) exemption.
 - Every write to persistent storage happens through `LayoutRepository`, which is the only component that touches `DocumentStore`.
+- **Only `material-icons-core` is available** — not `material-icons-extended`. The full extended set adds ~37 MB to the APK for icons this app never uses. Use a core icon (`Icons.Default.Settings` is in core) or a text label instead.
 - No crashes on: missing app, failed icon load, failed DataStore write, corrupt JSON, `PackageManager` throwing.
 - Unit tests live in `app/src/test/kotlin/dev/liner/launcher/` and must run headless via `gradle test`.
 - Instrumentation tests live in `app/src/androidTest/kotlin/dev/liner/launcher/` and **cannot be executed in this environment** (no emulator). They are shipped unverified and must be labelled as such in the README.
@@ -42,8 +43,25 @@ export ANDROID_HOME=/workspace/.toolchain/android-sdk
 export ANDROID_SDK_ROOT=$ANDROID_HOME
 export GRADLE_USER_HOME=/workspace/.gradle-home
 export PATH=$ANDROID_HOME/platform-tools:$PATH
-GRADLE=/workspace/.toolchain/gradle-8.11.1/bin/gradle
 ```
+
+**Run every Gradle command as `$GRADLE <tasks>`**, where `$GRADLE` is defined once
+per shell as:
+
+```bash
+GRADLE="/workspace/.toolchain/gradle-8.11.1/bin/gradle --no-parallel \
+  -Pkotlin.compiler.execution.strategy=in-process \
+  -Dorg.gradle.jvmargs=-Xmx1280m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
+```
+
+This override is **mandatory**. The committed `gradle.properties` asks for
+`-Xmx3g`, and this sandbox has 3 GB of RAM and 2 CPUs — the OOM killer
+terminates the build. Do not lower `-Xmx3g` in the committed file; it is
+correct for a developer's machine and only the sandbox needs the override.
+
+A cold build takes roughly 15 minutes here and the foreground tool timeout is
+600 s. Run the first build in the background and poll it. Incremental builds
+after that are fast.
 
 `local.properties` must contain `sdk.dir=/workspace/.toolchain/android-sdk`. It is gitignored; `local.properties.example` is committed.
 
@@ -197,7 +215,7 @@ androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
-androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+androidx-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
@@ -354,7 +372,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation(libs.androidx.material.icons.extended)
+    implementation(libs.androidx.material.icons.core)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
@@ -638,7 +656,7 @@ export ANDROID_HOME=/workspace/.toolchain/android-sdk
 export ANDROID_SDK_ROOT=$ANDROID_HOME
 export GRADLE_USER_HOME=/workspace/.gradle-home
 echo "sdk.dir=$ANDROID_HOME" > local.properties
-/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:assembleDebug :app:testDebugUnitTest
+$GRADLE :app:assembleDebug :app:testDebugUnitTest
 ```
 
 Expected: `BUILD SUCCESSFUL`, `app/build/outputs/apk/debug/app-debug.apk` exists, and `app/build/reports/tests/testDebugUnitTest/index.html` reports 1 test, 0 failures.
@@ -780,7 +798,7 @@ Run:
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*DocumentCodecTest*'
+$GRADLE :app:testDebugUnitTest --tests '*DocumentCodecTest*'
 ```
 
 Expected: compilation failure — `Unresolved reference: DocumentCodec`.
@@ -1004,7 +1022,7 @@ Run:
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*DocumentCodecTest*'
+$GRADLE :app:testDebugUnitTest --tests '*DocumentCodecTest*'
 ```
 
 Expected: `BUILD SUCCESSFUL`, 5 tests, 0 failures.
@@ -1240,7 +1258,7 @@ class DocumentEditsTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
 
 Expected: compilation failure — `Unresolved reference: moveItem`.
 
@@ -1367,7 +1385,7 @@ fun LayoutDocument.sectionById(sectionId: String): Section? =
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 22 tests, 0 failures.
 
@@ -1658,7 +1676,7 @@ class ClockFormatterTest {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*StyleResolverTest*' --tests '*AppCatalogTest*' --tests '*AppFilterTest*' --tests '*ClockFormatterTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*StyleResolverTest*' --tests '*AppCatalogTest*' --tests '*AppFilterTest*' --tests '*ClockFormatterTest*'`
 
 Expected: compilation failure — `Unresolved reference: StyleResolver`.
 
@@ -1819,7 +1837,7 @@ object ClockFormatter {
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*StyleResolverTest*' --tests '*AppCatalogTest*' --tests '*AppFilterTest*' --tests '*ClockFormatterTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*StyleResolverTest*' --tests '*AppCatalogTest*' --tests '*AppFilterTest*' --tests '*ClockFormatterTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 21 tests, 0 failures.
 
@@ -1914,7 +1932,7 @@ class DragTargetingTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*DragTargetingTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*DragTargetingTest*'`
 
 Expected: compilation failure — `Unresolved reference: DragTargeting`.
 
@@ -1979,7 +1997,7 @@ object DragTargeting {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*DragTargetingTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*DragTargetingTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 6 tests, 0 failures.
 
@@ -2112,7 +2130,7 @@ class LayoutRepositoryTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
 
 Expected: compilation failure — `Unresolved reference: LayoutRepository`.
 
@@ -2265,7 +2283,7 @@ class DataStoreDocumentStore(context: Context) : DocumentStore {
 
 - [ ] **Step 6: Run the test to verify it passes**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 6 tests, 0 failures.
 
@@ -2353,7 +2371,7 @@ class AppCatalogIntegrationTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*AppCatalogIntegrationTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*AppCatalogIntegrationTest*'`
 
 Expected: compilation failure — `Unresolved reference: InstalledAppsRepository` is *not* expected here, but the test file references `AppCatalog` which does exist. **If this test passes immediately, that is fine and expected** — it exercises Task 4 code. The genuinely new work in this task is the Android adapter, which has no JVM test. Change Step 2's expectation to: the test passes immediately (2 tests, 0 failures), confirming the catalog contract that the adapter depends on.
 
@@ -2494,7 +2512,7 @@ Run:
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest :app:assembleDebug
+$GRADLE :app:testDebugUnitTest :app:assembleDebug
 ```
 
 Expected: `BUILD SUCCESSFUL`. The unit test suite passes and the APK builds.
@@ -2573,7 +2591,7 @@ class ThemeMappingTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
 
 Expected: compilation failure — `Unresolved reference: fontFamilyFor`.
 
@@ -2752,13 +2770,30 @@ object WallpaperProvider {
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 5: Remove the redundant night theme resource**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
+`app/src/main/res/values-night/themes.xml` is byte-identical to
+`app/src/main/res/values/themes.xml`, so the night qualifier is a no-op that
+can never change anything. The platform theme is intentionally dark
+(`android:Theme.Material.NoActionBar`, `windowLightStatusBar=false`) because
+the launcher draws its own background and the home screen is dark by design.
+
+Delete the redundant file:
+
+```bash
+rm app/src/main/res/values-night/themes.xml
+```
+
+Light and dark handling belongs in `LinerTheme`, which is the only place that
+needs to differ between modes.
+
+- [ ] **Step 6: Run the test to verify it passes**
+
+Run: `$GRADLE :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 4 tests, 0 failures.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add app/src/main/kotlin/dev/liner/launcher/platform app/src/test/kotlin/dev/liner/launcher/platform
@@ -2828,7 +2863,7 @@ class HomeViewModelStateTest {
 
 - [ ] **Step 2: Run the test**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*HomeViewModelStateTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*HomeViewModelStateTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 2 tests, 0 failures. This test pins the contract that the view model will use.
 
@@ -3363,7 +3398,7 @@ Run:
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:assembleDebug :app:testDebugUnitTest
+$GRADLE :app:assembleDebug :app:testDebugUnitTest
 ```
 
 Expected: `BUILD SUCCESSFUL`. If the compiler reports unused-import or unresolved-reference errors in `HomeScreen.kt`, fix them directly (commonly `MaterialTheme` needs `androidx.compose.material3.MaterialTheme` imported).
@@ -3412,7 +3447,7 @@ Append to `app/src/test/kotlin/dev/liner/launcher/model/AppCatalogTest.kt`:
 
 - [ ] **Step 2: Run the test**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*AppCatalogTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*AppCatalogTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 7 tests, 0 failures.
 
@@ -3662,7 +3697,7 @@ In `LauncherActivity.kt`, pass `iconCache = container.iconCache` and implement
 
 - [ ] **Step 7: Build and verify**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:assembleDebug :app:testDebugUnitTest`
+Run: `$GRADLE :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
@@ -4031,7 +4066,7 @@ The indicator is drawn inside the `Box` that wraps the list, positioned with
 
 - [ ] **Step 4: Build and verify**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:assembleDebug :app:testDebugUnitTest`
+Run: `$GRADLE :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
@@ -4666,7 +4701,7 @@ Repeat for the other three with the same signature shape they will keep in Tasks
 
 - [ ] **Step 6: Build and verify**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:assembleDebug :app:testDebugUnitTest`
+Run: `$GRADLE :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
@@ -4714,7 +4749,7 @@ Append to `app/src/test/kotlin/dev/liner/launcher/model/DocumentEditsTest.kt`:
 
 - [ ] **Step 2: Run the test**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 23 tests, 0 failures.
 
@@ -4943,7 +4978,7 @@ fun SectionsTab(
 
 - [ ] **Step 5: Build and verify**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:assembleDebug :app:testDebugUnitTest`
+Run: `$GRADLE :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
@@ -5032,7 +5067,7 @@ class ImportExportTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest --tests '*ImportExportTest*'`
+Run: `$GRADLE :app:testDebugUnitTest --tests '*ImportExportTest*'`
 
 Expected: compilation failure — `Unresolved reference: ImportValidator`.
 
@@ -5247,7 +5282,7 @@ fun AdvancedTab(
 
 - [ ] **Step 6: Run the tests and build**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:testDebugUnitTest :app:assembleDebug`
+Run: `$GRADLE :app:testDebugUnitTest :app:assembleDebug`
 
 Expected: `BUILD SUCCESSFUL`, 4 import tests pass.
 
@@ -5487,7 +5522,7 @@ Tick each box as you go.
 
 - [ ] **Step 4: Compile the instrumentation tests**
 
-Run: `/workspace/.toolchain/gradle-8.11.1/bin/gradle :app:assembleDebugAndroidTest`
+Run: `$GRADLE :app:assembleDebugAndroidTest`
 
 Expected: `BUILD SUCCESSFUL`. The tests compile but **cannot be executed here** — there is no emulator or device in this environment. Record that fact in the README.
 
@@ -5512,7 +5547,7 @@ git commit -m "test: add instrumentation test sources and the manual test script
 - Consumes: the complete app.
 - Produces: `dist/liner-debug.apk`, `dist/liner-release.apk`, `dist/liner-source.zip`, `README.md`.
 
-- [ ] **Step 1: Generate the release keystore**
+- [ ] **Step 1: Generate the release keystore and harden the signing config**
 
 ```bash
 cd /workspace
@@ -5534,12 +5569,49 @@ keyAlias=liner
 keyPassword=linerelease
 ```
 
+A hand-written `keystore.properties` missing a key currently fails with an
+opaque configuration-time NPE. Harden the reads in `app/build.gradle.kts` so
+each missing key produces a clear message:
+
+```kotlin
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            fun required(key: String): String = keystoreProps.getProperty(key)
+                ?: error("keystore.properties is missing '$key'")
+
+            create("release") {
+                storeFile = rootProject.file(required("storeFile"))
+                storePassword = required("storePassword")
+                keyAlias = required("keyAlias")
+                keyPassword = required("keyPassword")
+            }
+        }
+    }
+```
+
+- [ ] **Step 1b: Generate the Gradle wrapper**
+
+The README tells users to run `./gradlew`, so the wrapper must ship with the
+source:
+
+```bash
+cd /workspace
+/workspace/.toolchain/gradle-8.11.1/bin/gradle wrapper --gradle-version 8.11.1
+```
+
+Expected: `gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar` and
+`gradle/wrapper/gradle-wrapper.properties` now exist. The wrapper's
+`distributionUrl` points at `services.gradle.org`, so the user needs network
+access on first build — that is the normal Gradle wrapper behaviour.
+
+Commit the wrapper files; they are part of the deliverable.
+
 - [ ] **Step 2: Build both APKs**
 
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-/workspace/.toolchain/gradle-8.11.1/bin/gradle clean :app:assembleDebug :app:assembleRelease :app:test
+$GRADLE clean :app:assembleDebug :app:assembleRelease :app:test
 ```
 
 Expected: `BUILD SUCCESSFUL`, all unit tests green.
