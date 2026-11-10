@@ -2543,10 +2543,12 @@ git commit -m "feat(store): add document store, repository and DataStore adapter
 - Create: `app/src/main/kotlin/dev/liner/launcher/apps/{InstalledAppsRepository,IconCache}.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/platform/{AppContainer,LinerApp}.kt` — move `LinerApp` here
 - Test: `app/src/test/kotlin/dev/liner/launcher/model/AppCatalogIntegrationTest.kt`
+- Test: `app/src/test/kotlin/dev/liner/launcher/apps/AppListProviderTest.kt`
 
 **Interfaces:**
 - Consumes: Task 2's `InstalledApp`, Task 4's `AppCatalog`.
 - Produces:
+  - `class AppListProvider(query: () -> List<InstalledApp>)` with `fun load(): List<InstalledApp>` — pure, no Android types, so the fallback is JVM-testable
   - `class InstalledAppsRepository(context: Context)` with `fun loadInstalledApps(): List<InstalledApp>`
   - `class IconCache(packageManager: PackageManager, sizePx: Int)` with `fun icon(packageName: String): ImageBitmap?`
   - `class AppContainer(context: Context)` with `val repository: LayoutRepository`, `val appsRepository: InstalledAppsRepository`, `val iconCache: IconCache`
@@ -2609,6 +2611,71 @@ class AppCatalogIntegrationTest {
     }
 }
 ```
+
+- [ ] **Step 1b: Write the app list fallback test**
+
+`app/src/test/kotlin/dev/liner/launcher/apps/AppListProviderTest.kt`:
+
+```kotlin
+package dev.liner.launcher.apps
+
+import dev.liner.launcher.model.InstalledApp
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class AppListProviderTest {
+
+    private val apps = listOf(
+        InstalledApp("com.mail", "com.mail.Main", "Gmail"),
+        InstalledApp("com.maps", "com.maps.Main", "Maps"),
+    )
+
+    @Test
+    fun `a successful query is returned`() {
+        val provider = AppListProvider { apps }
+
+        assertEquals(apps, provider.load())
+    }
+
+    @Test
+    fun `a failed query falls back to the last successful list`() {
+        var shouldFail = false
+        val provider = AppListProvider {
+            if (shouldFail) throw IllegalStateException("package manager unavailable") else apps
+        }
+
+        assertEquals(apps, provider.load())
+
+        shouldFail = true
+        assertEquals(apps, provider.load())
+    }
+
+    @Test
+    fun `a failed query before any success returns an empty list`() {
+        val provider = AppListProvider {
+            throw IllegalStateException("package manager unavailable")
+        }
+
+        assertTrue(provider.load().isEmpty())
+    }
+
+    @Test
+    fun `an empty result does not blank the remembered list`() {
+        var empty = false
+        val provider = AppListProvider { if (empty) emptyList() else apps }
+
+        provider.load()
+        empty = true
+
+        assertEquals(apps, provider.load())
+    }
+}
+```
+
+This is the only automated coverage of the spec's "failed query falls back to
+the last successful cached app list" requirement, and it runs on the JVM —
+the Android `PackageManager` call itself is the only part that needs a device.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
