@@ -29,8 +29,8 @@ cp local.properties.example local.properties   # then set sdk.dir
 ```
 
 Requires JDK 17 and the Android SDK with platform 35 and build-tools 35.0.0.
-The first build downloads the Gradle distribution and the dependencies, so it
-needs network access; after that it works offline.
+The first build downloads the Gradle distribution and the dependencies from
+the network; after they are cached the build works offline.
 
 `./gradlew` is the Gradle wrapper, and it is the supported way to build: it
 pins the Gradle version, so a build does not depend on what is installed on
@@ -75,6 +75,8 @@ signed** and cannot be installed. The debug build needs no keystore at all.
 | `liner-release.apk` | Signed release build, ready to install |
 | `liner-debug.apk` | Debug build |
 | `liner-source.zip` | The full Gradle project |
+| `README.md` | This file |
+| `MANUAL_TEST.md` | The manual test script |
 
 The source zip is the project as it is in version control: the Gradle
 wrapper, the sources, the tests and the documentation. It does not contain
