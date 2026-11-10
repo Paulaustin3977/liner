@@ -107,6 +107,13 @@ fun LayoutDocument.setAutoPruneUninstalled(enabled: Boolean): LayoutDocument =
     copy(autoPruneUninstalled = enabled)
 
 /**
+ * Records that the user has dismissed the first-run prompt, so it does not
+ * come back.
+ */
+fun LayoutDocument.dismissFirstRunPrompt(): LayoutDocument =
+    copy(firstRunPromptDismissed = true)
+
+/**
  * Removes every home item whose package is not in [installedPackages].
  *
  * A no-op when auto-pruning is off, and a no-op when nothing is stale.

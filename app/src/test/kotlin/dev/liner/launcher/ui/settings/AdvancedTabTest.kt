@@ -45,4 +45,13 @@ class AdvancedTabTest {
     fun `the reset keeps the version of the document`() {
         assertEquals(document.version, resetToDefaults(document).version)
     }
+
+    @Test
+    fun `the reset keeps the first-run prompt dismissed`() {
+        // The prompt is a one-time welcome, not a layout: a reset must not
+        // bring it back.
+        val dismissed = document.copy(firstRunPromptDismissed = true)
+
+        assertTrue(resetToDefaults(dismissed).firstRunPromptDismissed)
+    }
 }

@@ -1,6 +1,5 @@
 package dev.liner.launcher.ui.settings
 
-import android.content.Context
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,27 +12,19 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.ThemeTokens
 import dev.liner.launcher.model.setAutoPruneUninstalled
 import dev.liner.launcher.platform.DefaultHomeDetector
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import dev.liner.launcher.ui.common.rememberIsDefaultHome
 
 /**
  * The Advanced tab: the launcher's behaviour that is not about the look of
@@ -48,7 +39,7 @@ fun AdvancedTab(
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
 ) {
     val context = LocalContext.current
-    val isDefaultHome = rememberDefaultHome(context)
+    val isDefaultHome = rememberIsDefaultHome(context)
     var confirmingReset by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth()) {
@@ -133,6 +124,9 @@ fun AdvancedTab(
  * The sections, the theme, the hidden apps and the auto-prune setting all
  * go: a reset is a reset. The version stays — it is the version of the
  * document, not one of its settings.
+ *
+ * The first-run prompt's flag stays too: the prompt is a one-time welcome,
+ * not a layout, and a reset must not bring it back.
  */
 internal fun resetToDefaults(document: LayoutDocument): LayoutDocument = document.copy(
     sections = emptyList(),
@@ -140,46 +134,3 @@ internal fun resetToDefaults(document: LayoutDocument): LayoutDocument = documen
     hiddenFromDrawer = emptyList(),
     autoPruneUninstalled = false,
 )
-
-/**
- * Whether Liner is the default home app.
- *
- * The answer is null until it is known: it takes a round trip to the role
- * manager or the package manager, so it is asked off the main thread and
- * after the composition. The banner must not flash before the answer
- * arrives.
- *
- * The question is asked once when the tab appears, and again whenever the
- * screen comes back to the foreground: the user leaves for the system's
- * home-app settings and comes back, and the answer may have changed.
- */
-@Composable
-private fun rememberDefaultHome(context: Context): Boolean? {
-    var isDefaultHome by remember { mutableStateOf<Boolean?>(null) }
-    val scope = rememberCoroutineScope()
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    // Asked once when the tab appears.
-    LaunchedEffect(context) {
-        isDefaultHome = withContext(Dispatchers.IO) {
-            DefaultHomeDetector.isDefaultHome(context)
-        }
-    }
-
-    // …and again whenever the screen comes back to the foreground.
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                scope.launch {
-                    isDefaultHome = withContext(Dispatchers.IO) {
-                        DefaultHomeDetector.isDefaultHome(context)
-                    }
-                }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    return isDefaultHome
-}

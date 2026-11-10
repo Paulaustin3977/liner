@@ -71,18 +71,21 @@ import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.StyleResolver
 import dev.liner.launcher.model.ThemeTokens
 import dev.liner.launcher.model.addItem
+import dev.liner.launcher.model.dismissFirstRunPrompt
 import dev.liner.launcher.model.moveItem
 import dev.liner.launcher.model.removeItem
 import dev.liner.launcher.model.removeSection
 import dev.liner.launcher.model.renameItem
 import dev.liner.launcher.model.renameSection
 import dev.liner.launcher.model.sectionById
+import dev.liner.launcher.platform.DefaultHomeDetector
 import dev.liner.launcher.ui.common.BackgroundLayer
 import dev.liner.launcher.ui.common.ItemEditorSheet
 import dev.liner.launcher.ui.common.LabelRow
 import dev.liner.launcher.ui.common.SectionEditorSheet
 import dev.liner.launcher.ui.common.SectionHeaderRow
 import dev.liner.launcher.ui.common.dragIndicatorTop
+import dev.liner.launcher.ui.common.rememberIsDefaultHome
 import dev.liner.launcher.ui.drawer.DrawerSheet
 import dev.liner.launcher.ui.drawer.DrawerViewModel
 import kotlinx.coroutines.Dispatchers
@@ -210,6 +213,17 @@ fun HomeScreen(
 
     val context = LocalContext.current
 
+    // Whether Liner is the default home app. The answer is null until it is
+    // known: it takes a binder round trip, so it is asked off the main
+    // thread. The first-run prompt waits for the answer rather than flashing
+    // in and out while it is pending.
+    val isDefaultHome = rememberIsDefaultHome(context)
+
+    // The prompt is shown once, on the first launch, and only while Liner is
+    // not the default home app.
+    val showFirstRunPrompt = documentLoaded &&
+        shouldShowFirstRunPrompt(document.firstRunPromptDismissed, isDefaultHome)
+
     // Until the document and the app query have both answered, an empty list
     // means "not loaded yet" rather than "no apps" — showing the empty state
     // then would flash it on every cold start.
@@ -274,6 +288,14 @@ fun HomeScreen(
                 ),
         ) {
             ClockDateHeader(theme, chromeColor)
+
+            // The first-run prompt sits under the clock, above the list.
+            if (showFirstRunPrompt) {
+                FirstRunPrompt(
+                    onSetAsDefault = { DefaultHomeDetector.requestDefaultHome(context) },
+                    onDismiss = { viewModel.update { it.dismissFirstRunPrompt() } },
+                )
+            }
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),

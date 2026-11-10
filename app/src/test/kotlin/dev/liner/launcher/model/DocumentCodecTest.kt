@@ -1,6 +1,7 @@
 package dev.liner.launcher.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -136,5 +137,28 @@ class DocumentCodecTest {
         assertEquals(false, decoded.theme.showIcons)
         assertEquals(BackgroundSpec.Wallpaper(0.35f), decoded.theme.background)
         assertEquals(ColorSpec.FollowSystem, decoded.theme.textColor)
+    }
+
+    @Test
+    fun `a document saved before the first-run prompt was added still decodes`() {
+        // The field was added to the document after the first release, so
+        // every layout saved before that must still load — with the prompt
+        // not yet dismissed.
+        val json = """{"version":1,"sections":[],"theme":{}}"""
+
+        val decoded = DocumentCodec.decode(json)
+
+        assertNotNull(decoded)
+        assertFalse(decoded!!.firstRunPromptDismissed)
+    }
+
+    @Test
+    fun `the first-run prompt's dismissal survives a round trip`() {
+        val original = LayoutDocument(firstRunPromptDismissed = true)
+
+        val decoded = DocumentCodec.decode(DocumentCodec.encode(original))
+
+        assertNotNull(decoded)
+        assertTrue(decoded!!.firstRunPromptDismissed)
     }
 }

@@ -1,6 +1,7 @@
 package dev.liner.launcher.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -246,6 +247,27 @@ class DocumentEditsTest {
     @Test
     fun `setAutoPruneUninstalled toggles the flag`() {
         assertEquals(true, doc().setAutoPruneUninstalled(true).autoPruneUninstalled)
+    }
+
+    @Test
+    fun `dismissFirstRunPrompt records the dismissal`() {
+        val before = doc()
+        assertFalse(before.firstRunPromptDismissed)
+
+        val result = before.dismissFirstRunPrompt()
+
+        assertTrue(result.firstRunPromptDismissed)
+    }
+
+    @Test
+    fun `dismissFirstRunPrompt changes nothing else`() {
+        val before = doc()
+
+        val result = before.dismissFirstRunPrompt()
+
+        assertEquals(before.sections, result.sections)
+        assertEquals(before.theme, result.theme)
+        assertEquals(before.hiddenFromDrawer, result.hiddenFromDrawer)
     }
 
     @Test
