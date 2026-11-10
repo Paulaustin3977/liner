@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 
 /**
@@ -20,11 +21,21 @@ class IconCache(
     private val packageManager: PackageManager,
     private val sizePx: Int,
 ) {
-    private val cache = LruCache<String, ImageBitmap>(64)
+    // Bounded by bytes, not entry count: these are ARGB_8888 bitmaps at the
+    // drawable's intrinsic resolution, so a few hundred KB each on a modern
+    // device. A count-based ceiling of 64 would be tens of megabytes.
+    private val cache = object : LruCache<String, ImageBitmap>(MAX_CACHE_BYTES) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int = value.asAndroidBitmap().byteCount
+    }
+
+    // Packages whose icon could not be loaded. Without this, every
+    // recomposition of such a tile re-enters getApplicationIcon and re-throws.
+    private val unavailable = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     fun icon(packageName: String): ImageBitmap? {
         val key = "$packageName@$sizePx"
         cache.get(key)?.let { return it }
+        if (packageName in unavailable) return null
 
         val bitmap = try {
             packageManager.getApplicationIcon(packageName).toImageBitmap()
@@ -32,8 +43,16 @@ class IconCache(
             null
         }
 
-        if (bitmap != null) cache.put(key, bitmap)
+        if (bitmap != null) {
+            cache.put(key, bitmap)
+        } else {
+            unavailable += packageName
+        }
         return bitmap
+    }
+
+    private companion object {
+        const val MAX_CACHE_BYTES = 16 * 1024 * 1024
     }
 
     private fun Drawable.toImageBitmap(): ImageBitmap? {
