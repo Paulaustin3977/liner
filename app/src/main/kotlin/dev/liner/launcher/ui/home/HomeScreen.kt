@@ -3,7 +3,9 @@ package dev.liner.launcher.ui.home
 import android.graphics.Bitmap
 import android.text.format.DateFormat
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,24 +26,30 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.liner.launcher.apps.IconCache
 import dev.liner.launcher.model.ClockFormatter
 import dev.liner.launcher.model.HomeEntry
+import dev.liner.launcher.model.InstalledApp
 import dev.liner.launcher.model.StyleResolver
 import dev.liner.launcher.model.ThemeTokens
 import dev.liner.launcher.ui.common.BackgroundLayer
 import dev.liner.launcher.ui.common.LabelRow
 import dev.liner.launcher.ui.common.SectionHeaderRow
+import dev.liner.launcher.ui.drawer.DrawerSheet
+import dev.liner.launcher.ui.drawer.DrawerViewModel
 import kotlinx.coroutines.delay
 import java.time.ZoneId
 
@@ -57,6 +65,7 @@ fun HomeScreen(
     wallpaper: Bitmap?,
     iconCache: IconCache,
     onLaunch: (HomeEntry) -> Unit,
+    onLaunchApp: (InstalledApp) -> Unit,
     onOpenSettings: (String?) -> Unit,
     onRecoverLayout: (String) -> Unit,
 ) {
@@ -66,6 +75,22 @@ fun HomeScreen(
     val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
     val appsLoaded by viewModel.appsLoaded.collectAsStateWithLifecycle()
     val documentLoaded by viewModel.documentLoaded.collectAsStateWithLifecycle()
+
+    // The drawer is a sheet over the home screen. It is opened by an upward
+    // drag from the bottom of the screen and closed by launching an app, by
+    // opening the settings, or with the back button.
+    var drawerOpen by rememberSaveable { mutableStateOf(false) }
+    // The drawer view model belongs to the view model store, so its filter
+    // query survives a configuration change.
+    val drawerViewModel: DrawerViewModel = viewModel(
+        factory = DrawerViewModel.factory(viewModel.document, viewModel.installedApps),
+    )
+    val visibleApps by drawerViewModel.visibleApps.collectAsStateWithLifecycle()
+    val query by drawerViewModel.query.collectAsStateWithLifecycle()
+
+    // The drawer covers the whole screen, so the back button is the way out
+    // of it when the user does not want to launch anything.
+    BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
     val context = LocalContext.current
 
@@ -205,6 +230,40 @@ fun HomeScreen(
                 )
                 TextButton(onClick = { onOpenSettings("apps") }) { Text("Choose apps") }
             }
+        }
+
+        // A transparent strip across the bottom of the screen that captures an
+        // upward drag and opens the drawer. It sits above the home list, so
+        // the drag reaches it rather than scrolling the list.
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(120.dp)
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onDragEnd = {},
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            if (dragAmount < -12f) drawerOpen = true
+                        },
+                    )
+                },
+        )
+
+        // The drawer is drawn last, so it covers the home screen and the
+        // gesture zone below it.
+        if (drawerOpen) {
+            DrawerSheet(
+                visibleApps = visibleApps,
+                query = query,
+                style = theme.drawerStyle,
+                iconCache = iconCache,
+                onQueryChange = drawerViewModel::setQuery,
+                onLaunch = { app -> drawerOpen = false; onLaunchApp(app) },
+                onOpenSettings = { drawerOpen = false; onOpenSettings("appearance") },
+                onDismiss = { drawerOpen = false },
+            )
         }
     }
 }

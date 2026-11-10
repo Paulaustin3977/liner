@@ -70,6 +70,18 @@ class AppCatalogTest {
     }
 
     @Test
+    fun `drawer apps are sorted case insensitively by label`() {
+        val apps = listOf(
+            InstalledApp("com.b", "com.b.Main", "beta"),
+            InstalledApp("com.a", "com.a.Main", "Alpha"),
+        )
+
+        val result = AppCatalog.drawerApps(LayoutDocument(), apps)
+
+        assertEquals(listOf("com.a", "com.b"), result.map { it.packageName })
+    }
+
+    @Test
     fun `custom labels maps package names to their renamed labels`() {
         val labels = AppCatalog.customLabels(document)
 

@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
+import dev.liner.launcher.model.InstalledApp
 import dev.liner.launcher.ui.home.HomeScreen
 import dev.liner.launcher.ui.home.HomeViewModel
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +58,7 @@ class LauncherActivity : ComponentActivity() {
                     wallpaper = wallpaperBitmap,
                     iconCache = container.iconCache,
                     onLaunch = { entry -> launchEntry(entry.item.packageName) },
+                    onLaunchApp = { app -> launchApp(app) },
                     onOpenSettings = { tab -> openSettings(tab) },
                     onRecoverLayout = { payload -> writeRecoveryLog(payload) },
                 )
@@ -95,6 +97,17 @@ class LauncherActivity : ComponentActivity() {
             return
         }
         AppLauncher(this).launch(app)
+    }
+
+    /**
+     * Starts an app the user picked in the drawer. The drawer only lists
+     * installed apps, but the list can go stale between the query and the
+     * tap, so a failed start is reported rather than swallowed.
+     */
+    private fun launchApp(app: InstalledApp) {
+        if (!AppLauncher(this).launch(app)) {
+            Toast.makeText(this, "App not installed", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun openSettings(tab: String?) {
