@@ -34,12 +34,15 @@ class SettingsActivity : ComponentActivity() {
                 SettingsScreen(
                     document = document,
                     installedApps = apps,
+                    removedItems = viewModel.removedItems,
                     initialTab = initialTab,
                     writeFailed = writeFailed,
                     loadFailed = loadFailed,
                     appsLoaded = appsLoaded,
                     onUpdate = viewModel::update,
                     onRefresh = viewModel::refreshApps,
+                    onRememberRemoved = viewModel::rememberRemoved,
+                    onForgetRemoved = viewModel::forgetRemoved,
                 )
             }
         }

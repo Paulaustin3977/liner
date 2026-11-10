@@ -65,23 +65,28 @@ import java.util.UUID
  *
  * [appsLoaded] tells the tab whether the package manager has answered yet:
  * an empty list before that means "not loaded", not "no apps installed".
+ *
+ * [removedItems] holds the home items of the apps that were taken off the
+ * home screen, so that putting an app back keeps the label and the style the
+ * user gave it. It belongs to the view model rather than to this tab: the
+ * settings activity is recreated on a rotation, and state kept here would go
+ * with it. The tab reads it and changes it through [onRememberRemoved] and
+ * [onForgetRemoved].
  */
 @Composable
 fun AppsTab(
     document: LayoutDocument,
     installedApps: List<InstalledApp>,
     appsLoaded: Boolean,
+    removedItems: Map<String, RemovedHomeItem>,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
     onRefresh: () -> Unit,
+    onRememberRemoved: (packageName: String, item: HomeItem, sectionId: String, index: Int) -> Unit,
+    onForgetRemoved: (packageName: String) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
     // The home item the section chooser is open for.
     var movingItemId by remember { mutableStateOf<String?>(null) }
-    // The home items that were taken off the home screen, by package name.
-    // An app that is put back must keep the label and the style the user
-    // gave it, so the item itself is kept — not just the knowledge that the
-    // app was there.
-    var removedItems by remember { mutableStateOf(emptyMap<String, RemovedHomeItem>()) }
 
     val installedByPackage = remember(installedApps) {
         installedApps.associateBy { it.packageName }
@@ -119,10 +124,10 @@ fun AppsTab(
         // The item that was taken off the home screen is remembered, so that
         // putting it back keeps the label and the style the user gave it.
         val taken = removed
-        removedItems = if (taken != null) {
-            removedItems + (packageName to taken)
+        if (taken != null) {
+            onRememberRemoved(packageName, taken.item, taken.sectionId, taken.index)
         } else {
-            removedItems - packageName
+            onForgetRemoved(packageName)
         }
     }
 
@@ -289,7 +294,7 @@ internal fun moveItemToTarget(
  * because its label and its style belong to the user: a new item in its
  * place would silently drop both.
  */
-internal data class RemovedHomeItem(
+data class RemovedHomeItem(
     val item: HomeItem,
     val sectionId: String,
     val index: Int,

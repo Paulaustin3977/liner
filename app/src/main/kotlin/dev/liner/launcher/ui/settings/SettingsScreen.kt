@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.liner.launcher.model.HomeItem
 import dev.liner.launcher.model.InstalledApp
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.updateTheme
@@ -42,12 +43,15 @@ private val TAB_KEYS = listOf("appearance", "apps", "sections", "importexport", 
 fun SettingsScreen(
     document: LayoutDocument,
     installedApps: List<InstalledApp>,
+    removedItems: Map<String, RemovedHomeItem>,
     initialTab: String?,
     writeFailed: Boolean,
     loadFailed: Boolean,
     appsLoaded: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
     onRefresh: () -> Unit,
+    onRememberRemoved: (packageName: String, item: HomeItem, sectionId: String, index: Int) -> Unit,
+    onForgetRemoved: (packageName: String) -> Unit,
 ) {
     val startIndex = remember(initialTab) { tabIndexFor(initialTab) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
@@ -125,8 +129,11 @@ fun SettingsScreen(
                         document = document,
                         installedApps = installedApps,
                         appsLoaded = appsLoaded,
+                        removedItems = removedItems,
                         onUpdate = onUpdate,
                         onRefresh = onRefresh,
+                        onRememberRemoved = onRememberRemoved,
+                        onForgetRemoved = onForgetRemoved,
                     )
 
                     "Sections" -> SectionsTab(
