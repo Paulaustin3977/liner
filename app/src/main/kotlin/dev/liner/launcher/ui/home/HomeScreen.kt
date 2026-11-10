@@ -25,12 +25,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -50,7 +52,9 @@ import dev.liner.launcher.ui.common.LabelRow
 import dev.liner.launcher.ui.common.SectionHeaderRow
 import dev.liner.launcher.ui.drawer.DrawerSheet
 import dev.liner.launcher.ui.drawer.DrawerViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.time.ZoneId
 
 /**
@@ -188,12 +192,20 @@ fun HomeScreen(
                         key = { "$sectionIndex:${it.item.id}" },
                     ) { entry ->
                         // Icons are opt-in: the home screen is icon-free by
-                        // default. The cache makes the lookup cheap, and a
-                        // failed load simply leaves the row without an icon.
-                        val icon = if (theme.showIcons) {
-                            iconCache.icon(entry.item.packageName)
-                        } else {
-                            null
+                        // default. When they are on, they are rasterised off
+                        // the main thread for the same reason as the drawer.
+                        val icon by produceState<ImageBitmap?>(
+                            initialValue = null,
+                            key1 = entry.item.packageName,
+                            key2 = theme.showIcons,
+                        ) {
+                            value = if (theme.showIcons) {
+                                withContext(Dispatchers.IO) {
+                                    iconCache.icon(entry.item.packageName)
+                                }
+                            } else {
+                                null
+                            }
                         }
                         LabelRow(
                             text = entry.displayLabel,
@@ -259,6 +271,11 @@ fun HomeScreen(
                 query = query,
                 style = theme.drawerStyle,
                 iconCache = iconCache,
+                background = theme.background,
+                wallpaper = wallpaper,
+                appsLoaded = appsLoaded,
+                systemTextColor = systemTextColor,
+                systemBackgroundColor = systemBackgroundColor,
                 onQueryChange = drawerViewModel::setQuery,
                 onLaunch = { app -> drawerOpen = false; onLaunchApp(app) },
                 onOpenSettings = { drawerOpen = false; onOpenSettings("appearance") },
