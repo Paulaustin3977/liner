@@ -18,7 +18,7 @@ class AppContainer(context: Context) {
     val repository: LayoutRepository = LayoutRepository(DataStoreDocumentStore(appContext))
     val appsRepository: InstalledAppsRepository = InstalledAppsRepository(appContext)
     // 48dp is the drawer's tile size; the pixel size follows the density.
-    val iconCache: IconCache = IconCache(
+    val iconCache: IconCache = IconCache.forPackageManager(
         appContext.packageManager,
         sizePx = (ICON_TILE_DP * appContext.resources.displayMetrics.density).toInt(),
     )

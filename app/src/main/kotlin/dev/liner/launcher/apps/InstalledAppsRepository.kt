@@ -31,7 +31,10 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
             // filtered, and the remembered list stands in for it.
             apps.ifEmpty { lastSuccessful }
         }
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
+        // Exception, not Throwable, to match the icon path: a bug or an
+        // OutOfMemoryError must surface rather than being swallowed into a
+        // silent fallback.
         lastSuccessful
     }
 }

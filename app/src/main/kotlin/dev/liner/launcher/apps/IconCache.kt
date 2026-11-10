@@ -16,9 +16,12 @@ import androidx.compose.ui.graphics.asImageBitmap
  * [sizePx] only when the drawable reports no size of its own — that keeps
  * adaptive icons crisp when the UI scales them down. A failed load returns
  * null rather than throwing, so the caller can render the app label instead.
+ *
+ * The loader is injected rather than taken as a PackageManager, so the
+ * caching and stickiness policy can be tested on the JVM without a device.
  */
 class IconCache(
-    private val packageManager: PackageManager,
+    private val loadIcon: (String) -> ImageBitmap?,
     private val sizePx: Int,
 ) {
     // Bounded by bytes, not entry count: these are ARGB_8888 bitmaps at the
@@ -28,8 +31,8 @@ class IconCache(
         override fun sizeOf(key: String, value: ImageBitmap): Int = value.asAndroidBitmap().byteCount
     }
 
-    // Packages whose icon could not be loaded. Without this, every
-    // recomposition of such a tile re-enters getApplicationIcon and re-throws.
+    // Packages that are genuinely gone. Without this, every recomposition of
+    // a tile whose icon is missing re-enters the loader and re-throws.
     private val unavailable = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     fun icon(packageName: String): ImageBitmap? {
@@ -38,7 +41,7 @@ class IconCache(
         if (packageName in unavailable) return null
 
         val bitmap = try {
-            packageManager.getApplicationIcon(packageName).toImageBitmap()
+            loadIcon(packageName)
         } catch (_: PackageManager.NameNotFoundException) {
             // The package is genuinely gone. Remember that, so the tile stops
             // asking for an icon that will never load.
@@ -55,19 +58,31 @@ class IconCache(
         return bitmap
     }
 
-    private companion object {
-        const val MAX_CACHE_BYTES = 16 * 1024 * 1024
-    }
+    companion object {
+        private const val MAX_CACHE_BYTES = 16 * 1024 * 1024
 
-    private fun Drawable.toImageBitmap(): ImageBitmap? {
-        val width = if (intrinsicWidth > 0) intrinsicWidth else sizePx
-        val height = if (intrinsicHeight > 0) intrinsicHeight else sizePx
-        if (width <= 0 || height <= 0) return null
-
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        setBounds(0, 0, width, height)
-        draw(canvas)
-        return bitmap.asImageBitmap()
+        /**
+         * The production loader: rasterises the package's application icon.
+         */
+        fun forPackageManager(packageManager: PackageManager, sizePx: Int): IconCache =
+            IconCache(
+                loadIcon = { packageName ->
+                    packageManager.getApplicationIcon(packageName).toImageBitmap(sizePx)
+                },
+                sizePx = sizePx,
+            )
     }
+}
+
+/** Rasterises a drawable, falling back to [fallbackSize] when it reports no size. */
+private fun Drawable.toImageBitmap(fallbackSize: Int): ImageBitmap? {
+    val width = if (intrinsicWidth > 0) intrinsicWidth else fallbackSize
+    val height = if (intrinsicHeight > 0) intrinsicHeight else fallbackSize
+    if (width <= 0 || height <= 0) return null
+
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    setBounds(0, 0, width, height)
+    draw(canvas)
+    return bitmap.asImageBitmap()
 }
