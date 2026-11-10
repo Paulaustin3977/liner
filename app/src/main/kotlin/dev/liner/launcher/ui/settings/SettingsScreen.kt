@@ -43,18 +43,33 @@ fun SettingsScreen(
     installedApps: List<InstalledApp>,
     initialTab: String?,
     writeFailed: Boolean,
+    loadFailed: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
 ) {
     val startIndex = remember(initialTab) { tabIndexFor(initialTab) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
 
-    // A failed save must not be silent.
     val context = LocalContext.current
+
+    // A failed save must not be silent.
     LaunchedEffect(writeFailed) {
         if (writeFailed) {
             Toast.makeText(
                 context,
                 "Your changes could not be saved. Try again.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    // Nor may a failed read: the settings activity can be the process's
+    // first activity, and the user is looking at the default theme without
+    // knowing why.
+    LaunchedEffect(loadFailed) {
+        if (loadFailed) {
+            Toast.makeText(
+                context,
+                "Your saved layout could not be read, so Liner started with defaults.",
                 Toast.LENGTH_LONG,
             ).show()
         }

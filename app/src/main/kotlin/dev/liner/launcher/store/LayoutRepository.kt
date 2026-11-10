@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,8 +21,9 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Every mutation goes through [update], which updates the in-memory state
  * immediately and persists it asynchronously. Writes are funnelled through one
- * unbounded channel consumed by a single coroutine, so two rapid edits can
- * never land out of order.
+ * conflated channel consumed by a single coroutine, so two rapid edits can
+ * never land out of order — and a burst of edits (a dragged slider fires one
+ * per frame) collapses into a single write of the settled state.
  */
 class LayoutRepository(private val store: DocumentStore) {
 
@@ -32,7 +34,9 @@ class LayoutRepository(private val store: DocumentStore) {
         val done: CompletableDeferred<Unit>,
     )
 
-    private val writes = Channel<PendingWrite>(Channel.UNLIMITED)
+    // Conflated: the store only ever needs the newest document, so an
+    // update that arrives while another is pending replaces it.
+    private val writes = Channel<PendingWrite>(Channel.CONFLATED)
     private val latestWrite = AtomicReference<CompletableDeferred<Unit>?>(null)
 
     private val _document = MutableStateFlow(LayoutDocument())
@@ -56,22 +60,18 @@ class LayoutRepository(private val store: DocumentStore) {
     init {
         scope.launch {
             for (pending in writes) {
-                try {
-                    store.write(DocumentCodec.encode(pending.document))
-                    _writeFailed.value = false
-                } catch (e: CancellationException) {
-                    // Never swallow cancellation — it must propagate so the
-                    // writer shuts down with the rest of its scope.
-                    throw e
-                } catch (_: Throwable) {
-                    // Throwable here, unlike the model layer's Exception: this
-                    // is a long-lived writer coroutine, and letting an Error
-                    // escape would kill it — after which every later edit would
-                    // silently stop being persisted.
-                    _writeFailed.value = true
-                } finally {
-                    pending.done.complete(Unit)
-                }
+                // Let a burst of updates settle before writing. Dragging a
+                // settings slider fires an update per frame, and each write
+                // rewrites the whole document — so writing every one of them
+                // would hammer the disk for no benefit. The store only ever
+                // needs the settled state of the gesture.
+                delay(WRITE_QUIET_MS)
+
+                // A newer update may have arrived while we waited. The store
+                // only ever needs the newest state, so the older one is
+                // superseded rather than written out.
+                val newest = writes.tryReceive().getOrNull() ?: pending
+                writeDocument(newest)
             }
         }
     }
@@ -96,6 +96,10 @@ class LayoutRepository(private val store: DocumentStore) {
         // written to the store would be discarded by the older stored value.
         // Later screens therefore get the document the repository already
         // holds.
+        //
+        // The trade-off: a store that cannot be read at start-up stays
+        // unreadable for the life of the process. The failure is reported
+        // through [loadFailed] and the user can retry by restarting the app.
         if (!loaded.compareAndSet(false, true)) return
         readFromStore()
     }
@@ -145,6 +149,33 @@ class LayoutRepository(private val store: DocumentStore) {
         }
     }
 
+    /**
+     * Persists one document and reports whether it worked.
+     *
+     * A superseded write is never persisted at all — its [PendingWrite.done]
+     * is simply dropped, so nothing may await a *specific* write's deferred.
+     * [awaitPendingWrite] awaits the newest write, which is always the one
+     * that is (or will be) written.
+     */
+    private suspend fun writeDocument(pending: PendingWrite) {
+        try {
+            store.write(DocumentCodec.encode(pending.document))
+            _writeFailed.value = false
+        } catch (e: CancellationException) {
+            // Never swallow cancellation — it must propagate so the
+            // writer shuts down with the rest of its scope.
+            throw e
+        } catch (_: Throwable) {
+            // Throwable here, unlike the model layer's Exception: this
+            // is a long-lived writer coroutine, and letting an Error
+            // escape would kill it — after which every later edit would
+            // silently stop being persisted.
+            _writeFailed.value = true
+        } finally {
+            pending.done.complete(Unit)
+        }
+    }
+
     fun update(transform: (LayoutDocument) -> LayoutDocument) {
         val next = transform(_document.value)
         _document.value = next
@@ -157,5 +188,10 @@ class LayoutRepository(private val store: DocumentStore) {
     /** Test hook: waits for the most recent write to settle. */
     internal suspend fun awaitPendingWrite() {
         latestWrite.get()?.await()
+    }
+
+    companion object {
+        /** How long the writer waits for a burst of updates to settle. */
+        private const val WRITE_QUIET_MS = 100L
     }
 }

@@ -3,6 +3,7 @@ package dev.liner.launcher.ui.settings
 import dev.liner.launcher.model.BackgroundSpec
 import dev.liner.launcher.model.ColorSpec
 import dev.liner.launcher.model.ThemeTokens
+import dev.liner.launcher.platform.weightFor
 import dev.liner.launcher.ui.common.formatSliderValue
 import dev.liner.launcher.ui.common.isPaletteColorSelected
 import org.junit.Assert.assertEquals
@@ -120,5 +121,57 @@ class SettingsAppearanceTest {
     @Test
     fun `following the system selects no palette colour`() {
         assertFalse(isPaletteColorSelected(ColorSpec.FollowSystem, 0xFF000000.toInt()))
+    }
+
+    @Test
+    fun `a gradient change is applied to the background the theme holds now`() {
+        // The transform derives the background from the CURRENT document, so
+        // a change that landed in between is not undone by a stale copy.
+        val theme = ThemeTokens(
+            background = BackgroundSpec.Gradient(
+                from = ColorSpec.Solid(0xFF101014.toInt()),
+                to = ColorSpec.Solid(0xFF2A2A32.toInt()),
+                angleDegrees = 90,
+            ),
+        )
+
+        val result = theme.withGradient { it.copy(angleDegrees = 180) }
+
+        assertEquals(
+            BackgroundSpec.Gradient(
+                from = ColorSpec.Solid(0xFF101014.toInt()),
+                to = ColorSpec.Solid(0xFF2A2A32.toInt()),
+                angleDegrees = 180,
+            ),
+            result.background,
+        )
+    }
+
+    @Test
+    fun `a theme without a gradient is left alone by a gradient change`() {
+        val theme = ThemeTokens(background = BackgroundSpec.Solid(ColorSpec.FollowSystem))
+
+        assertEquals(theme, theme.withGradient { it.copy(angleDegrees = 180) })
+    }
+
+    @Test
+    fun `every weight the spec names is offered`() {
+        assertEquals(
+            listOf("100", "200", "300", "400", "500", "600", "700", "800", "900"),
+            FONT_WEIGHTS,
+        )
+    }
+
+    @Test
+    fun `every offered weight renders differently`() {
+        // A weight the platform cannot map would be a dead chip: it would
+        // look the same as the default.
+        val rendered = FONT_WEIGHTS.map { weightFor(it.toInt()) }
+
+        assertEquals(
+            "every weight the picker offers must look different",
+            FONT_WEIGHTS.size,
+            rendered.distinct().size,
+        )
     }
 }

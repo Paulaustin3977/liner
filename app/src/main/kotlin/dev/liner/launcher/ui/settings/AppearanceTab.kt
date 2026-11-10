@@ -18,6 +18,16 @@ import dev.liner.launcher.ui.common.ColorOptionRow
 import dev.liner.launcher.ui.common.SliderRow
 
 /**
+ * Every font weight the spec's 100-900 range names.
+ *
+ * The platform's `weightFor` maps all nine, and `StyleResolver` parses any
+ * numeric weight string, so every one of them is a real choice.
+ */
+internal val FONT_WEIGHTS = listOf(
+    "100", "200", "300", "400", "500", "600", "700", "800", "900",
+)
+
+/**
  * The appearance tab: every theme token the user can change.
  *
  * The tab writes the tokens straight into the document through
@@ -51,18 +61,23 @@ fun AppearanceTab(
                 ColorOptionRow(
                     label = "From",
                     selected = background.from,
-                    onSelect = { spec -> onThemeChange { it.copy(background = background.copy(from = spec)) } },
+                    // The transform derives the background from the CURRENT
+                    // document, not from the value captured when the tab was
+                    // composed: a stale copy would silently undo whatever
+                    // else changed the background in the meantime.
+                    onSelect = { spec -> onThemeChange { current -> current.withGradient { it.copy(from = spec) } } },
                 )
                 ColorOptionRow(
                     label = "To",
                     selected = background.to,
-                    onSelect = { spec -> onThemeChange { it.copy(background = background.copy(to = spec)) } },
+                    onSelect = { spec -> onThemeChange { current -> current.withGradient { it.copy(to = spec) } } },
                 )
                 SliderRow(
                     label = "Angle",
                     value = background.angleDegrees.toFloat(),
                     range = 0f..360f,
-                    onValueChange = { angle -> onThemeChange { it.copy(background = background.copy(angleDegrees = angle.toInt())) } },
+                    steps = 359,
+                    onValueChange = { angle -> onThemeChange { current -> current.withGradient { it.copy(angleDegrees = angle.toInt()) } } },
                 )
             }
 
@@ -70,6 +85,9 @@ fun AppearanceTab(
                 label = "Dim",
                 value = background.dim,
                 range = 0f..0.9f,
+                // Five percent steps: the scrim is a percentage, and a
+                // tenth of a percent is not a thing a user can see.
+                steps = 8,
                 onValueChange = { dim -> onThemeChange { it.copy(background = BackgroundSpec.Wallpaper(dim)) } },
             )
         }
@@ -93,12 +111,19 @@ fun AppearanceTab(
             label = "Text size",
             value = theme.listTextSizeSp,
             range = 12f..48f,
+            // The token is a whole number of points, so the slider snaps to
+            // it — otherwise the stored value would be 23.4567 while the
+            // label read "23.46".
+            steps = 35,
             onValueChange = { size -> onThemeChange { it.copy(listTextSizeSp = size) } },
         )
 
         ChoiceRow(
             label = "Weight",
-            options = listOf("300", "400", "500", "700", "900"),
+            // Every weight the spec's 100-900 range names. The platform's
+            // font weights are all reachable, and `StyleResolver` parses any
+            // numeric weight string.
+            options = FONT_WEIGHTS,
             selected = theme.listFontWeight,
             onSelect = { weight -> onThemeChange { it.copy(listFontWeight = weight) } },
         )
@@ -107,6 +132,9 @@ fun AppearanceTab(
             label = "Letter spacing",
             value = theme.letterSpacingEm,
             range = -0.05f..0.2f,
+            // Two decimal places, which is the precision the token is read
+            // back at.
+            steps = 24,
             onValueChange = { spacing -> onThemeChange { it.copy(letterSpacingEm = spacing) } },
         )
 
@@ -114,6 +142,7 @@ fun AppearanceTab(
             label = "Row spacing",
             value = theme.itemSpacingDp,
             range = 0f..32f,
+            steps = 31,
             onValueChange = { spacing -> onThemeChange { it.copy(itemSpacingDp = spacing) } },
         )
 
@@ -121,6 +150,7 @@ fun AppearanceTab(
             label = "Side padding",
             value = theme.screenPaddingHdp,
             range = 0f..48f,
+            steps = 47,
             onValueChange = { padding -> onThemeChange { it.copy(screenPaddingHdp = padding) } },
         )
 
@@ -128,6 +158,7 @@ fun AppearanceTab(
             label = "Top and bottom padding",
             value = theme.screenPaddingVdp,
             range = 0f..48f,
+            steps = 47,
             onValueChange = { padding -> onThemeChange { it.copy(screenPaddingVdp = padding) } },
         )
 
@@ -165,6 +196,7 @@ fun AppearanceTab(
             label = "Section title size",
             value = theme.sectionTitleSizeSp,
             range = 8f..24f,
+            steps = 15,
             onValueChange = { size -> onThemeChange { it.copy(sectionTitleSizeSp = size) } },
         )
 
@@ -201,6 +233,7 @@ fun AppearanceTab(
             label = "Icon size",
             value = theme.iconSizeDp.toFloat(),
             range = 16f..64f,
+            steps = 47,
             onValueChange = { size -> onThemeChange { it.copy(iconSizeDp = size.toInt()) } },
         )
 
@@ -227,6 +260,19 @@ internal fun backgroundStyleLabel(background: BackgroundSpec): String = when (ba
     is BackgroundSpec.Solid -> "solid"
     is BackgroundSpec.Gradient -> "gradient"
     is BackgroundSpec.Wallpaper -> "wallpaper"
+}
+
+/**
+ * Applies [transform] to the theme's gradient, if it has one. A theme
+ * whose background is not a gradient is left alone — the gradient controls
+ * are only reachable when the background IS a gradient.
+ */
+internal fun ThemeTokens.withGradient(
+    transform: (BackgroundSpec.Gradient) -> BackgroundSpec.Gradient,
+): ThemeTokens {
+    val current = background
+    if (current !is BackgroundSpec.Gradient) return this
+    return copy(background = transform(current))
 }
 
 /**

@@ -215,4 +215,57 @@ class LayoutRepositoryTest {
 
         gate.complete(Unit)
     }
+
+    @Test
+    fun `a burst of updates is persisted once, with the final state`() = runTest {
+        val store = CountingDocumentStore()
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        // A warm-up update pays the class-loading cost, so the measured burst
+        // below is not slowed down by the first call on a cold JVM. It is
+        // superseded by the burst either way.
+        repository.update { it }
+
+        // Dragging a settings slider fires an update per frame. The store
+        // only ever needs the settled state of the gesture, so the burst has
+        // to collapse into a single write of the final document.
+        repeat(40) { index ->
+            repository.update { it.addSection("s$index") }
+        }
+
+        repository.awaitPendingWrite()
+
+        assertEquals(1, store.writeCount)
+
+        // The live preview still saw every movement: the in-memory document
+        // holds all of them, and the one write that did land holds them all
+        // too.
+        val expected = (0 until 40).map { "s$it" }
+        assertEquals(expected, repository.document.value.sections.map { it.id })
+        val decoded = store.lastWritten?.let(DocumentCodec::decode)
+        assertEquals(expected, decoded?.sections?.map { it.id })
+    }
+}
+
+/**
+ * A [DocumentStore] that counts the writes it receives, so a test can pin
+ * how many times the document was persisted.
+ */
+private class CountingDocumentStore : DocumentStore {
+
+    private val lock = Any()
+    private val written = mutableListOf<String>()
+
+    /** How many times the document was written. */
+    val writeCount: Int get() = synchronized(lock) { written.size }
+
+    /** The payload of the last write, or null if nothing was written. */
+    val lastWritten: String? get() = synchronized(lock) { written.lastOrNull() }
+
+    override suspend fun read(): String? = null
+
+    override suspend fun write(json: String) {
+        synchronized(lock) { written += json }
+    }
 }
