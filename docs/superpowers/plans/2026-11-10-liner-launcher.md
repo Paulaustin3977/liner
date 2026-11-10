@@ -2466,6 +2466,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -2490,7 +2491,9 @@ class LayoutRepository(private val store: DocumentStore) {
         val done: CompletableDeferred<Unit>,
     )
 
-    private val writes = Channel<PendingWrite>(Channel.UNLIMITED)
+    // Conflated: the store only ever needs the newest document, so an
+    // update that arrives while another is pending replaces it.
+    private val writes = Channel<PendingWrite>(Channel.CONFLATED)
     private val latestWrite = AtomicReference<CompletableDeferred<Unit>?>(null)
 
     private val _document = MutableStateFlow(LayoutDocument())
@@ -2514,22 +2517,18 @@ class LayoutRepository(private val store: DocumentStore) {
     init {
         scope.launch {
             for (pending in writes) {
-                try {
-                    store.write(DocumentCodec.encode(pending.document))
-                    _writeFailed.value = false
-                } catch (e: CancellationException) {
-                    // Never swallow cancellation — it must propagate so the
-                    // writer shuts down with the rest of its scope.
-                    throw e
-                } catch (_: Throwable) {
-                    // Throwable here, unlike the model layer's Exception: this
-                    // is a long-lived writer coroutine, and letting an Error
-                    // escape would kill it — after which every later edit would
-                    // silently stop being persisted.
-                    _writeFailed.value = true
-                } finally {
-                    pending.done.complete(Unit)
-                }
+                // Let a burst of updates settle before writing. Dragging a
+                // settings slider fires an update per frame, and each write
+                // rewrites the whole document — so writing every one of them
+                // would hammer the disk for no benefit. The store only ever
+                // needs the settled state of the gesture.
+                delay(WRITE_QUIET_MS)
+
+                // A newer update may have arrived while we waited. The store
+                // only ever needs the newest state, so the older one is
+                // superseded rather than written out.
+                val newest = writes.tryReceive().getOrNull() ?: pending
+                writeDocument(newest)
             }
         }
     }
@@ -2554,6 +2553,10 @@ class LayoutRepository(private val store: DocumentStore) {
         // written to the store would be discarded by the older stored value.
         // Later screens therefore get the document the repository already
         // holds.
+        //
+        // The trade-off: a store that cannot be read at start-up stays
+        // unreadable for the life of the process. The failure is reported
+        // through [loadFailed] and the user can retry by restarting the app.
         if (!loaded.compareAndSet(false, true)) return
         readFromStore()
     }
@@ -2603,6 +2606,25 @@ class LayoutRepository(private val store: DocumentStore) {
         }
     }
 
+    private suspend fun writeDocument(pending: PendingWrite) {
+        try {
+            store.write(DocumentCodec.encode(pending.document))
+            _writeFailed.value = false
+        } catch (e: CancellationException) {
+            // Never swallow cancellation — it must propagate so the
+            // writer shuts down with the rest of its scope.
+            throw e
+        } catch (_: Throwable) {
+            // Throwable here, unlike the model layer's Exception: this
+            // is a long-lived writer coroutine, and letting an Error
+            // escape would kill it — after which every later edit would
+            // silently stop being persisted.
+            _writeFailed.value = true
+        } finally {
+            pending.done.complete(Unit)
+        }
+    }
+
     fun update(transform: (LayoutDocument) -> LayoutDocument) {
         val next = transform(_document.value)
         _document.value = next
@@ -2615,6 +2637,11 @@ class LayoutRepository(private val store: DocumentStore) {
     /** Test hook: waits for the most recent write to settle. */
     internal suspend fun awaitPendingWrite() {
         latestWrite.get()?.await()
+    }
+
+    companion object {
+        /** How long the writer waits for a burst of updates to settle. */
+        private const val WRITE_QUIET_MS = 100L
     }
 }
 ```
@@ -5374,8 +5401,8 @@ git commit -m "feat(ui): add edit mode with drag reorder, rename and remove"
 **Interfaces:**
 - Consumes: Task 3's `updateTheme`, Task 8's `FONT_KEYS`.
 - Produces:
-  - `@Composable fun SettingsScreen(document: LayoutDocument, installedApps: List<InstalledApp>, initialTab: String?, writeFailed: Boolean, onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit)` — the same shape as the tab signatures in Tasks 13 and 14, which take the document and a single `onUpdate` callback
-  - `class SettingsViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val writeFailed: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
+  - `@Composable fun SettingsScreen(document: LayoutDocument, installedApps: List<InstalledApp>, initialTab: String?, writeFailed: Boolean, loadFailed: Boolean, onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit)` — the same shape as the tab signatures in Tasks 13 and 14, which take the document and a single `onUpdate` callback
+  - `class SettingsViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
   - `@Composable fun SliderRow(label: String, value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, onValueChange: (Float) -> Unit)`
   - `@Composable fun ChoiceRow(label: String, options: List<String>, selected: String, onSelect: (String) -> Unit)`
   - `@Composable fun ColorOptionRow(label: String, selected: ColorSpec, onSelect: (ColorSpec) -> Unit)`
@@ -5385,6 +5412,7 @@ git commit -m "feat(ui): add edit mode with drag reorder, rename and remove"
     - `internal fun tabIndexFor(key: String?): Int` — the tab a settings key opens
     - `internal fun backgroundStyleLabel(background: BackgroundSpec): String` — the name of a background style
     - `internal fun applyBackgroundStyle(theme: ThemeTokens, style: String): ThemeTokens` — the theme after a style is picked
+    - `internal fun ThemeTokens.withGradient(transform: (BackgroundSpec.Gradient) -> BackgroundSpec.Gradient): ThemeTokens` — applies a change to the current gradient, whatever the document holds at the time
     - `internal fun formatSliderValue(value: Float): String` — how a slider value is written out
     - `internal fun isPaletteColorSelected(selected: ColorSpec, argb: Int): Boolean` — whether a swatch is the picked colour
 
@@ -5615,18 +5643,23 @@ fun AppearanceTab(
                 ColorOptionRow(
                     label = "From",
                     selected = background.from,
-                    onSelect = { spec -> onThemeChange { it.copy(background = background.copy(from = spec)) } },
+                    // The transform derives the background from the CURRENT
+                    // document, not from the value captured when the tab was
+                    // composed: a stale copy would silently undo whatever
+                    // else changed the background in the meantime.
+                    onSelect = { spec -> onThemeChange { current -> current.withGradient { it.copy(from = spec) } } },
                 )
                 ColorOptionRow(
                     label = "To",
                     selected = background.to,
-                    onSelect = { spec -> onThemeChange { it.copy(background = background.copy(to = spec)) } },
+                    onSelect = { spec -> onThemeChange { current -> current.withGradient { it.copy(to = spec) } } },
                 )
                 SliderRow(
                     label = "Angle",
                     value = background.angleDegrees.toFloat(),
                     range = 0f..360f,
-                    onValueChange = { angle -> onThemeChange { it.copy(background = background.copy(angleDegrees = angle.toInt())) } },
+                    steps = 359,
+                    onValueChange = { angle -> onThemeChange { current -> current.withGradient { it.copy(angleDegrees = angle.toInt()) } } },
                 )
             }
 
@@ -5634,6 +5667,9 @@ fun AppearanceTab(
                 label = "Dim",
                 value = background.dim,
                 range = 0f..0.9f,
+                // Five percent steps: the scrim is a percentage, and a
+                // tenth of a percent is not a thing a user can see.
+                steps = 8,
                 onValueChange = { dim -> onThemeChange { it.copy(background = BackgroundSpec.Wallpaper(dim)) } },
             )
         }
@@ -5657,12 +5693,19 @@ fun AppearanceTab(
             label = "Text size",
             value = theme.listTextSizeSp,
             range = 12f..48f,
+            // The token is a whole number of points, so the slider snaps to
+            // it — otherwise the stored value would be 23.4567 while the
+            // label read "23.46".
+            steps = 35,
             onValueChange = { size -> onThemeChange { it.copy(listTextSizeSp = size) } },
         )
 
         ChoiceRow(
             label = "Weight",
-            options = listOf("300", "400", "500", "700", "900"),
+            // Every weight the spec's 100-900 range names. The platform's
+            // font weights are all reachable, and `StyleResolver` parses any
+            // numeric weight string.
+            options = listOf("100", "200", "300", "400", "500", "600", "700", "800", "900"),
             selected = theme.listFontWeight,
             onSelect = { weight -> onThemeChange { it.copy(listFontWeight = weight) } },
         )
@@ -5671,6 +5714,9 @@ fun AppearanceTab(
             label = "Letter spacing",
             value = theme.letterSpacingEm,
             range = -0.05f..0.2f,
+            // Two decimal places, which is the precision the token is read
+            // back at.
+            steps = 24,
             onValueChange = { spacing -> onThemeChange { it.copy(letterSpacingEm = spacing) } },
         )
 
@@ -5678,6 +5724,7 @@ fun AppearanceTab(
             label = "Row spacing",
             value = theme.itemSpacingDp,
             range = 0f..32f,
+            steps = 31,
             onValueChange = { spacing -> onThemeChange { it.copy(itemSpacingDp = spacing) } },
         )
 
@@ -5685,6 +5732,7 @@ fun AppearanceTab(
             label = "Side padding",
             value = theme.screenPaddingHdp,
             range = 0f..48f,
+            steps = 47,
             onValueChange = { padding -> onThemeChange { it.copy(screenPaddingHdp = padding) } },
         )
 
@@ -5692,6 +5740,7 @@ fun AppearanceTab(
             label = "Top and bottom padding",
             value = theme.screenPaddingVdp,
             range = 0f..48f,
+            steps = 47,
             onValueChange = { padding -> onThemeChange { it.copy(screenPaddingVdp = padding) } },
         )
 
@@ -5729,6 +5778,7 @@ fun AppearanceTab(
             label = "Section title size",
             value = theme.sectionTitleSizeSp,
             range = 8f..24f,
+            steps = 15,
             onValueChange = { size -> onThemeChange { it.copy(sectionTitleSizeSp = size) } },
         )
 
@@ -5765,6 +5815,7 @@ fun AppearanceTab(
             label = "Icon size",
             value = theme.iconSizeDp.toFloat(),
             range = 16f..64f,
+            steps = 47,
             onValueChange = { size -> onThemeChange { it.copy(iconSizeDp = size.toInt()) } },
         )
 
@@ -5800,6 +5851,17 @@ internal fun backgroundStyleLabel(background: BackgroundSpec): String = when (ba
  * background the user can then adjust. An unknown style falls back to the
  * wallpaper rather than leaving the theme without a background.
  */
+/**
+ * Applies [transform] to the theme's gradient, if it has one. A theme
+ * whose background is not a gradient is left alone — the gradient controls
+ * are only reachable when the background IS a gradient.
+ */
+internal fun ThemeTokens.withGradient(transform: (BackgroundSpec.Gradient) -> BackgroundSpec.Gradient): ThemeTokens {
+    val current = background
+    if (current !is BackgroundSpec.Gradient) return this
+    return copy(background = transform(current))
+}
+
 internal fun applyBackgroundStyle(theme: ThemeTokens, style: String): ThemeTokens = when (style) {
     "solid" -> theme.copy(background = BackgroundSpec.Solid(ColorSpec.Solid(0xFF101014.toInt())))
     "gradient" -> theme.copy(
@@ -5862,18 +5924,33 @@ fun SettingsScreen(
     installedApps: List<InstalledApp>,
     initialTab: String?,
     writeFailed: Boolean,
+    loadFailed: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
 ) {
     val startIndex = remember(initialTab) { tabIndexFor(initialTab) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
 
-    // A failed save must not be silent.
     val context = LocalContext.current
+
+    // A failed save must not be silent.
     LaunchedEffect(writeFailed) {
         if (writeFailed) {
             Toast.makeText(
                 context,
                 "Your changes could not be saved. Try again.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    // Nor may a failed read: the settings activity can be the process's
+    // first activity, and the user is looking at the default theme without
+    // knowing why.
+    LaunchedEffect(loadFailed) {
+        if (loadFailed) {
+            Toast.makeText(
+                context,
+                "Your saved layout could not be read, so Liner started with defaults.",
                 Toast.LENGTH_LONG,
             ).show()
         }
@@ -6042,12 +6119,14 @@ class SettingsActivity : ComponentActivity() {
                 val document by viewModel.document.collectAsStateWithLifecycle()
                 val apps by viewModel.installedApps.collectAsStateWithLifecycle()
                 val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
+                val loadFailed by viewModel.loadFailed.collectAsStateWithLifecycle()
 
                 SettingsScreen(
                     document = document,
                     installedApps = apps,
                     initialTab = initialTab,
                     writeFailed = writeFailed,
+                    loadFailed = loadFailed,
                     onUpdate = viewModel::update,
                 )
             }
