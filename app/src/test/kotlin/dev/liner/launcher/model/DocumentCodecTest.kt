@@ -55,6 +55,56 @@ class DocumentCodecTest {
     }
 
     @Test
+    fun `every background and colour variant survives a round trip`() {
+        val backgrounds = listOf(
+            BackgroundSpec.Solid(ColorSpec.Solid(0xFF102030.toInt())),
+            BackgroundSpec.Gradient(
+                from = ColorSpec.Solid(0xFF000000.toInt()),
+                to = ColorSpec.FollowSystem,
+                angleDegrees = 45,
+            ),
+            BackgroundSpec.Wallpaper(dim = 0.5f),
+        )
+
+        backgrounds.forEach { background ->
+            val original = LayoutDocument(theme = ThemeTokens(background = background))
+
+            val decoded = DocumentCodec.decode(DocumentCodec.encode(original))
+
+            assertNotNull(decoded)
+            assertEquals(original, decoded)
+        }
+    }
+
+    @Test
+    fun `a hand written payload decodes to the expected document`() {
+        val json = """
+            {
+              "version": 1,
+              "sections": [
+                {
+                  "id": "s1",
+                  "title": "Daily",
+                  "items": [ { "id": "a", "packageName": "com.mail" } ]
+                }
+              ],
+              "theme": {
+                "background": { "type": "wallpaper", "dim": 0.5 },
+                "textColor": { "type": "system" }
+              }
+            }
+        """.trimIndent()
+
+        val decoded = DocumentCodec.decode(json)
+
+        assertNotNull(decoded)
+        assertEquals(BackgroundSpec.Wallpaper(0.5f), decoded!!.theme.background)
+        assertEquals(ColorSpec.FollowSystem, decoded.theme.textColor)
+        assertEquals("Daily", decoded.sections[0].title)
+        assertEquals("com.mail", decoded.sections[0].items[0].packageName)
+    }
+
+    @Test
     fun `ignores unknown fields for forward compatibility`() {
         val json = """{"version":1,"sections":[],"theme":{},"somethingNew":{"a":1}}"""
 

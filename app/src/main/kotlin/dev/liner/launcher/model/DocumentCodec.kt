@@ -20,7 +20,11 @@ object DocumentCodec {
     fun decode(raw: String): LayoutDocument? = try {
         val decoded = json.decodeFromString<LayoutDocument>(raw)
         if (decoded.version > LayoutDocument.CURRENT_VERSION) null else migrate(decoded)
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
+        // Data errors only: malformed JSON, missing fields, an unknown
+        // discriminator. Deliberately not Throwable — an OutOfMemoryError or a
+        // bug inside migrate() must surface, not silently reset the user's
+        // layout to defaults.
         null
     }
 
