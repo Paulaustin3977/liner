@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -63,6 +64,7 @@ fun HomeScreen(
     val document by viewModel.document.collectAsStateWithLifecycle()
     val entries by viewModel.homeEntries.collectAsStateWithLifecycle()
     val loadFailed by viewModel.loadFailed.collectAsStateWithLifecycle()
+    val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
 
@@ -78,6 +80,17 @@ fun HomeScreen(
                 Toast.LENGTH_LONG,
             ).show()
             viewModel.recoveredPayload?.let(onRecoverLayout)
+        }
+    }
+
+    // A save that failed must not be silent — the spec asks for a notice.
+    LaunchedEffect(writeFailed) {
+        if (writeFailed) {
+            Toast.makeText(
+                context,
+                "Your changes could not be saved. Try again.",
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 
@@ -150,6 +163,24 @@ fun HomeScreen(
                         )
                     }
                 }
+            }
+        }
+
+        if (entries.isEmpty()) {
+            // Nothing chosen yet: point the user at the Apps tab rather than
+            // showing a blank screen. It is drawn last so the button is the
+            // top-most element and the tap reaches it.
+            Column(
+                Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = "No apps on your home screen yet",
+                    fontSize = 16.sp,
+                    color = systemTextColor,
+                )
+                TextButton(onClick = { onOpenSettings("apps") }) { Text("Choose apps") }
             }
         }
     }
