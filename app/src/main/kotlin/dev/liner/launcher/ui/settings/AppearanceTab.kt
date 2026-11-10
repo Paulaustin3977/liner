@@ -16,6 +16,7 @@ import dev.liner.launcher.platform.FONT_KEYS
 import dev.liner.launcher.ui.common.ChoiceRow
 import dev.liner.launcher.ui.common.ColorOptionRow
 import dev.liner.launcher.ui.common.SliderRow
+import kotlin.math.roundToInt
 
 /**
  * Every font weight the spec's 100-900 range names.
@@ -77,7 +78,7 @@ fun AppearanceTab(
                     value = background.angleDegrees.toFloat(),
                     range = 0f..360f,
                     steps = 359,
-                    onValueChange = { angle -> onThemeChange { current -> current.withGradient { it.copy(angleDegrees = angle.toInt()) } } },
+                    onValueChange = { angle -> onThemeChange { current -> current.withAngle(angle) } },
                 )
             }
 
@@ -234,7 +235,7 @@ fun AppearanceTab(
             value = theme.iconSizeDp.toFloat(),
             range = 16f..64f,
             steps = 47,
-            onValueChange = { size -> onThemeChange { it.copy(iconSizeDp = size.toInt()) } },
+            onValueChange = { size -> onThemeChange { it.withIconSize(size) } },
         )
 
         ChoiceRow(
@@ -274,6 +275,25 @@ internal fun ThemeTokens.withGradient(
     if (current !is BackgroundSpec.Gradient) return this
     return copy(background = transform(current))
 }
+
+/**
+ * The theme with the gradient angle the slider's value stands for.
+ *
+ * The value is rounded, not truncated: the slider's tick value is a float
+ * that can land a hair below the tick it stands for — the 113° tick
+ * evaluates to 112.99999237f — and truncation would store one degree less
+ * than the tick the user aimed at, which makes a few of the ticks
+ * unreachable.
+ */
+internal fun ThemeTokens.withAngle(angle: Float): ThemeTokens =
+    withGradient { it.copy(angleDegrees = angle.roundToInt()) }
+
+/**
+ * The theme with the icon size the slider's value stands for, rounded the
+ * same way as the gradient angle.
+ */
+internal fun ThemeTokens.withIconSize(size: Float): ThemeTokens =
+    copy(iconSizeDp = size.roundToInt())
 
 /**
  * The theme after the user picks a background style.

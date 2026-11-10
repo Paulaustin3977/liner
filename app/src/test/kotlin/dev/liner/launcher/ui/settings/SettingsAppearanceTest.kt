@@ -155,6 +155,37 @@ class SettingsAppearanceTest {
     }
 
     @Test
+    fun `the snapped gradient angle rounds instead of truncating`() {
+        // The slider's tick value is a float that can land a hair below the
+        // tick: the 113° tick evaluates to 112.99999237f. Truncating would
+        // store 112 and make the tick unreachable by dragging.
+        val theme = ThemeTokens(
+            background = BackgroundSpec.Gradient(ColorSpec.FollowSystem, ColorSpec.FollowSystem),
+        )
+
+        val result = theme.withAngle(112.99999237f)
+
+        assertEquals(113, (result.background as BackgroundSpec.Gradient).angleDegrees)
+    }
+
+    @Test
+    fun `the snapped gradient angle does not round past the tick`() {
+        val theme = ThemeTokens(
+            background = BackgroundSpec.Gradient(ColorSpec.FollowSystem, ColorSpec.FollowSystem),
+        )
+
+        val result = theme.withAngle(113.00000763f)
+
+        assertEquals(113, (result.background as BackgroundSpec.Gradient).angleDegrees)
+    }
+
+    @Test
+    fun `the snapped icon size rounds instead of truncating`() {
+        assertEquals(24, ThemeTokens().withIconSize(23.999998f).iconSizeDp)
+        assertEquals(24, ThemeTokens().withIconSize(24.000002f).iconSizeDp)
+    }
+
+    @Test
     fun `every weight the spec names is offered`() {
         assertEquals(
             listOf("100", "200", "300", "400", "500", "600", "700", "800", "900"),
