@@ -45,13 +45,16 @@ export GRADLE_USER_HOME=/workspace/.gradle-home
 export PATH=$ANDROID_HOME/platform-tools:$PATH
 ```
 
-**Run every Gradle command as `$GRADLE <tasks>`**, where `$GRADLE` is defined once
+**Run every Gradle command as `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" <tasks>`**, where `$GRADLE` is defined once
 per shell as:
 
 ```bash
-GRADLE="/workspace/.toolchain/gradle-8.11.1/bin/gradle --no-parallel \
-  -Pkotlin.compiler.execution.strategy=in-process \
-  '-Dorg.gradle.jvmargs=-Xmx1280m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8'"
+GRADLE_BIN=/workspace/.toolchain/gradle-8.11.1/bin/gradle
+GRADLE_ARGS=(
+  --no-parallel
+  -Pkotlin.compiler.execution.strategy=in-process
+  "-Dorg.gradle.jvmargs=-Xmx1280m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
+)
 ```
 
 This override is **mandatory**. The committed `gradle.properties` asks for
@@ -656,7 +659,7 @@ export ANDROID_HOME=/workspace/.toolchain/android-sdk
 export ANDROID_SDK_ROOT=$ANDROID_HOME
 export GRADLE_USER_HOME=/workspace/.gradle-home
 echo "sdk.dir=$ANDROID_HOME" > local.properties
-$GRADLE :app:assembleDebug :app:testDebugUnitTest
+"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest
 ```
 
 Expected: `BUILD SUCCESSFUL`, `app/build/outputs/apk/debug/app-debug.apk` exists, and `app/build/reports/tests/testDebugUnitTest/index.html` reports 1 test, 0 failures.
@@ -848,7 +851,7 @@ Run:
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-$GRADLE :app:testDebugUnitTest --tests '*DocumentCodecTest*'
+"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*DocumentCodecTest*'
 ```
 
 Expected: compilation failure — `Unresolved reference: DocumentCodec`.
@@ -1077,7 +1080,7 @@ Run:
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-$GRADLE :app:testDebugUnitTest --tests '*DocumentCodecTest*'
+"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*DocumentCodecTest*'
 ```
 
 Expected: `BUILD SUCCESSFUL`, 7 tests, 0 failures.
@@ -1313,7 +1316,7 @@ class DocumentEditsTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
 
 Expected: compilation failure — `Unresolved reference: moveItem`.
 
@@ -1440,7 +1443,7 @@ fun LayoutDocument.sectionById(sectionId: String): Section? =
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 22 tests, 0 failures.
 
@@ -1731,7 +1734,7 @@ class ClockFormatterTest {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*StyleResolverTest*' --tests '*AppCatalogTest*' --tests '*AppFilterTest*' --tests '*ClockFormatterTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*StyleResolverTest*' --tests '*AppCatalogTest*' --tests '*AppFilterTest*' --tests '*ClockFormatterTest*'`
 
 Expected: compilation failure — `Unresolved reference: StyleResolver`.
 
@@ -1892,7 +1895,7 @@ object ClockFormatter {
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*StyleResolverTest*' --tests '*AppCatalogTest*' --tests '*AppFilterTest*' --tests '*ClockFormatterTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*StyleResolverTest*' --tests '*AppCatalogTest*' --tests '*AppFilterTest*' --tests '*ClockFormatterTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 21 tests, 0 failures.
 
@@ -1987,7 +1990,7 @@ class DragTargetingTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*DragTargetingTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*DragTargetingTest*'`
 
 Expected: compilation failure — `Unresolved reference: DragTargeting`.
 
@@ -2052,7 +2055,7 @@ object DragTargeting {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*DragTargetingTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*DragTargetingTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 6 tests, 0 failures.
 
@@ -2185,7 +2188,7 @@ class LayoutRepositoryTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
 
 Expected: compilation failure — `Unresolved reference: LayoutRepository`.
 
@@ -2342,7 +2345,7 @@ class DataStoreDocumentStore(context: Context) : DocumentStore {
 
 - [ ] **Step 6: Run the test to verify it passes**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 6 tests, 0 failures.
 
@@ -2430,7 +2433,7 @@ class AppCatalogIntegrationTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*AppCatalogIntegrationTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*AppCatalogIntegrationTest*'`
 
 Expected: compilation failure — `Unresolved reference: InstalledAppsRepository` is *not* expected here, but the test file references `AppCatalog` which does exist. **If this test passes immediately, that is fine and expected** — it exercises Task 4 code. The genuinely new work in this task is the Android adapter, which has no JVM test. Change Step 2's expectation to: the test passes immediately (2 tests, 0 failures), confirming the catalog contract that the adapter depends on.
 
@@ -2571,7 +2574,7 @@ Run:
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-$GRADLE :app:testDebugUnitTest :app:assembleDebug
+"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest :app:assembleDebug
 ```
 
 Expected: `BUILD SUCCESSFUL`. The unit test suite passes and the APK builds.
@@ -2650,7 +2653,7 @@ class ThemeMappingTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
 
 Expected: compilation failure — `Unresolved reference: fontFamilyFor`.
 
@@ -2848,7 +2851,7 @@ needs to differ between modes.
 
 - [ ] **Step 6: Run the test to verify it passes**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 4 tests, 0 failures.
 
@@ -2922,7 +2925,7 @@ class HomeViewModelStateTest {
 
 - [ ] **Step 2: Run the test**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*HomeViewModelStateTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*HomeViewModelStateTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 2 tests, 0 failures. This test pins the contract that the view model will use.
 
@@ -3457,7 +3460,7 @@ Run:
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-$GRADLE :app:assembleDebug :app:testDebugUnitTest
+"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest
 ```
 
 Expected: `BUILD SUCCESSFUL`. If the compiler reports unused-import or unresolved-reference errors in `HomeScreen.kt`, fix them directly (commonly `MaterialTheme` needs `androidx.compose.material3.MaterialTheme` imported).
@@ -3506,7 +3509,7 @@ Append to `app/src/test/kotlin/dev/liner/launcher/model/AppCatalogTest.kt`:
 
 - [ ] **Step 2: Run the test**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*AppCatalogTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*AppCatalogTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 7 tests, 0 failures.
 
@@ -3756,7 +3759,7 @@ In `LauncherActivity.kt`, pass `iconCache = container.iconCache` and implement
 
 - [ ] **Step 7: Build and verify**
 
-Run: `$GRADLE :app:assembleDebug :app:testDebugUnitTest`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
@@ -4125,7 +4128,7 @@ The indicator is drawn inside the `Box` that wraps the list, positioned with
 
 - [ ] **Step 4: Build and verify**
 
-Run: `$GRADLE :app:assembleDebug :app:testDebugUnitTest`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
@@ -4760,7 +4763,7 @@ Repeat for the other three with the same signature shape they will keep in Tasks
 
 - [ ] **Step 6: Build and verify**
 
-Run: `$GRADLE :app:assembleDebug :app:testDebugUnitTest`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
@@ -4808,7 +4811,7 @@ Append to `app/src/test/kotlin/dev/liner/launcher/model/DocumentEditsTest.kt`:
 
 - [ ] **Step 2: Run the test**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 23 tests, 0 failures.
 
@@ -5037,7 +5040,7 @@ fun SectionsTab(
 
 - [ ] **Step 5: Build and verify**
 
-Run: `$GRADLE :app:assembleDebug :app:testDebugUnitTest`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
@@ -5126,7 +5129,7 @@ class ImportExportTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `$GRADLE :app:testDebugUnitTest --tests '*ImportExportTest*'`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*ImportExportTest*'`
 
 Expected: compilation failure — `Unresolved reference: ImportValidator`.
 
@@ -5341,7 +5344,7 @@ fun AdvancedTab(
 
 - [ ] **Step 6: Run the tests and build**
 
-Run: `$GRADLE :app:testDebugUnitTest :app:assembleDebug`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest :app:assembleDebug`
 
 Expected: `BUILD SUCCESSFUL`, 4 import tests pass.
 
@@ -5581,7 +5584,7 @@ Tick each box as you go.
 
 - [ ] **Step 4: Compile the instrumentation tests**
 
-Run: `$GRADLE :app:assembleDebugAndroidTest`
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebugAndroidTest`
 
 Expected: `BUILD SUCCESSFUL`. The tests compile but **cannot be executed here** — there is no emulator or device in this environment. Record that fact in the README.
 
@@ -5670,7 +5673,7 @@ Commit the wrapper files; they are part of the deliverable.
 ```bash
 cd /workspace
 export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspace/.gradle-home
-$GRADLE clean :app:assembleDebug :app:assembleRelease :app:test
+"$GRADLE_BIN" "${GRADLE_ARGS[@]}" clean :app:assembleDebug :app:assembleRelease :app:test
 ```
 
 Expected: `BUILD SUCCESSFUL`, all unit tests green.
