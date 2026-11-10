@@ -1,11 +1,11 @@
 package dev.liner.launcher.ui.settings
 
 import android.widget.Toast
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
@@ -55,7 +55,19 @@ fun SettingsScreen(
 ) {
     val startIndex = remember(initialTab) { tabIndexFor(initialTab) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
-    val scrollState = rememberScrollState()
+
+    // Every tab scrolls on its own: scrolling Appearance to the bottom and
+    // then switching to Sections must not leave Sections part-way down. The
+    // states are held here, above the tab content, so that they live as long
+    // as the screen does and not only while their own tab is showing, and
+    // they are saved, so a rotation does not throw the position away either.
+    // TABS and TAB_KEYS are index-parallel, so a tab's place in one is its
+    // place in the other.
+    val scrollStates = TAB_KEYS.map { tabKey ->
+        rememberSaveable(saver = ScrollState.Saver, key = "settings-scroll-$tabKey") {
+            ScrollState(0)
+        }
+    }
 
     val context = LocalContext.current
 
@@ -105,7 +117,9 @@ fun SettingsScreen(
             // tab brings its own lazy list, and a lazy list inside a
             // vertically scrolling column is measured with an infinite
             // height — which Compose refuses to lay out — so the scroll
-            // belongs to the tabs that need one.
+            // belongs to the tabs that need one. Each of them scrolls with
+            // the state that belongs to that tab, so the position the user
+            // left a tab at is the position they come back to.
             Column(
                 Modifier
                     .weight(1f)
@@ -114,7 +128,7 @@ fun SettingsScreen(
                         if (TABS[selectedTab] == "Apps") {
                             Modifier
                         } else {
-                            Modifier.verticalScroll(scrollState)
+                            Modifier.verticalScroll(scrollStates[selectedTab])
                         },
                     )
                     .padding(horizontal = 16.dp),
