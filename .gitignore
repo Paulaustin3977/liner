@@ -8,3 +8,4 @@ build/
 *.jks
 local.properties
 keystore.properties
+.superpowers/
