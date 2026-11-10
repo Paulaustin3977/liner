@@ -1,5 +1,6 @@
 package dev.liner.launcher.platform
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import dev.liner.launcher.model.InstalledApp
@@ -12,7 +13,7 @@ class AppLauncher(context: Context) {
     fun launch(app: InstalledApp): Boolean = try {
         val intent = Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_LAUNCHER)
-            .setComponent(android.content.ComponentName(app.packageName, app.activityClass))
+            .setComponent(ComponentName(app.packageName, app.activityClass))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         appContext.startActivity(intent)
         true

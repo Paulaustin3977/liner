@@ -10,12 +10,20 @@ class ThemeMappingTest {
     @Test
     fun `known font keys map to the expected families`() {
         assertEquals(FontFamily.SansSerif, fontFamilyFor("sans-serif"))
-        assertEquals(FontFamily.SansSerif, fontFamilyFor("sans-serif-light"))
-        assertEquals(FontFamily.SansSerif, fontFamilyFor("sans-serif-medium"))
-        assertEquals(FontFamily.SansSerif, fontFamilyFor("sans-serif-condensed"))
         assertEquals(FontFamily.Serif, fontFamilyFor("serif"))
         assertEquals(FontFamily.Monospace, fontFamilyFor("monospace"))
         assertEquals(FontFamily.Cursive, fontFamilyFor("cursive"))
+    }
+
+    @Test
+    fun `every offered font key renders differently`() {
+        val families = FONT_KEYS.map { fontFamilyFor(it) }
+
+        assertEquals(
+            "every font the picker offers must look different",
+            FONT_KEYS.size,
+            families.distinct().size,
+        )
     }
 
     @Test

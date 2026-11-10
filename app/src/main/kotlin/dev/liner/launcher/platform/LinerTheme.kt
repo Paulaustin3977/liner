@@ -9,12 +9,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 
-/** The font families a user can pick from in Settings → Appearance. */
+/**
+ * The font families a user can pick from in Settings → Appearance.
+ *
+ * Only genuinely distinct families are offered. The platform's
+ * "sans-serif-light", "sans-serif-medium" and "sans-serif-condensed" faces
+ * cannot be referenced from Compose without bundling the font files as
+ * resources — `android.R.font` does not expose them and Compose's `Font`
+ * factory only accepts a resource id — so offering them would present three
+ * choices that render identically to plain sans-serif.
+ */
 val FONT_KEYS = listOf(
     "sans-serif",
-    "sans-serif-light",
-    "sans-serif-medium",
-    "sans-serif-condensed",
     "serif",
     "monospace",
     "cursive",
@@ -48,6 +54,7 @@ fun LinerTheme(
     val colors = if (darkTheme) {
         darkColorScheme(
             primary = Color(0xFFE8E8ED),
+            onPrimary = Color(0xFF101014),
             background = Color(0xFF101014),
             surface = Color(0xFF101014),
             onBackground = Color(0xFFF5F5F7),
@@ -56,6 +63,7 @@ fun LinerTheme(
     } else {
         lightColorScheme(
             primary = Color(0xFF1A1A1E),
+            onPrimary = Color(0xFFFAFAFC),
             background = Color(0xFFFAFAFC),
             surface = Color(0xFFFAFAFC),
             onBackground = Color(0xFF1A1A1E),
