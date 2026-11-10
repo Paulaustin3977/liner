@@ -6,7 +6,7 @@
         tools:ignore="QueryAllPackagesPermission" />
 
     <application
-        android:name=".LinerApp"
+        android:name=".platform.LinerApp"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
