@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -41,6 +42,9 @@ class LayoutRepository(private val store: DocumentStore) {
     val writeFailed: StateFlow<Boolean> = _writeFailed.asStateFlow()
 
     private val _loadFailed = MutableStateFlow(false)
+
+    /** Whether the store has already been read into memory. */
+    private val loaded = AtomicBoolean(false)
 
     /** True when the stored layout could not be read and the defaults were used instead. */
     val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
@@ -87,6 +91,23 @@ class LayoutRepository(private val store: DocumentStore) {
      * reset instead of quietly losing it.
      */
     suspend fun load() {
+        // The store is read once per process. A second load would race the
+        // writer: an edit that has been applied in memory but not yet
+        // written to the store would be discarded by the older stored value.
+        // Later screens therefore get the document the repository already
+        // holds.
+        if (!loaded.compareAndSet(false, true)) return
+        readFromStore()
+    }
+
+    /**
+     * Test hook: re-reads the store, ignoring the once-per-process guard.
+     */
+    internal suspend fun reload() {
+        readFromStore()
+    }
+
+    private suspend fun readFromStore() {
         var readFailed = false
         val raw = try {
             store.read()

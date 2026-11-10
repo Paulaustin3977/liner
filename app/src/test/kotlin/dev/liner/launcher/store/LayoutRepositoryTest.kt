@@ -5,6 +5,7 @@ import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.addSection
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -143,7 +144,7 @@ class LayoutRepositoryTest {
         assertEquals("{not json", repository.recoveredPayload)
 
         store.write(DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1")))))
-        repository.load()
+        repository.reload()
 
         assertFalse(repository.loadFailed.value)
         assertNull(repository.recoveredPayload)
@@ -179,9 +180,39 @@ class LayoutRepositoryTest {
         repository.load()
         assertTrue(repository.loadFailed.value)
 
-        repository.load()
+        repository.reload()
 
         assertFalse(repository.loadFailed.value)
         assertNull(repository.recoveredPayload)
+    }
+
+    @Test
+    fun `a second load does not discard an edit that has not been written back yet`() = runTest {
+        // The write is held back, so the store keeps the pre-edit document
+        // for as long as the test needs it to.
+        val gate = CompletableDeferred<Unit>()
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s0"))))
+        val store = object : DocumentStore {
+            var content: String? = stored
+            override suspend fun read(): String? = content
+            override suspend fun write(json: String) {
+                gate.await()
+                content = json
+            }
+        }
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        // The edit is applied in memory and queued for the writer, but the
+        // write has not landed yet.
+        repository.update { it.addSection("s1", "One") }
+
+        // A second read of the store would replace the in-memory document
+        // with the pre-edit one and throw the edit away.
+        repository.load()
+
+        assertEquals(listOf("s0", "s1"), repository.document.value.sections.map { it.id })
+
+        gate.complete(Unit)
     }
 }
