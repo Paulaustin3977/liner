@@ -9,9 +9,12 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 
 /**
- * Caches app icons rasterised to a bitmap of a fixed size.
- * A failed load returns null rather than throwing, so the caller can render
- * the app label instead.
+ * Caches app icons rasterised to a bitmap.
+ *
+ * The bitmap keeps the drawable's intrinsic resolution, falling back to
+ * [sizePx] only when the drawable reports no size of its own — that keeps
+ * adaptive icons crisp when the UI scales them down. A failed load returns
+ * null rather than throwing, so the caller can render the app label instead.
  */
 class IconCache(
     private val packageManager: PackageManager,
