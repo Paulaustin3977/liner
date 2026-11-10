@@ -87,17 +87,22 @@ class LayoutRepository(private val store: DocumentStore) {
      * reset instead of quietly losing it.
      */
     suspend fun load() {
+        var readFailed = false
         val raw = try {
             store.read()
         } catch (_: Throwable) {
             // The read itself failed — that is not the same as "nothing
             // stored", and the user's layout must not be reported as if it
             // had never existed.
-            _loadFailed.value = true
+            readFailed = true
             null
         }
 
         if (raw == null) {
+            // Nothing stored is not a failure, so the flag is cleared here
+            // rather than left over from an earlier failed load.
+            recoveredPayload = null
+            _loadFailed.value = readFailed
             _document.value = LayoutDocument()
             return
         }

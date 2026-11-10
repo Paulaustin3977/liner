@@ -43,22 +43,13 @@ class LayoutRepositoryTest {
     }
 
     @Test
-    fun `a readable payload does not report a failure`() = runTest {
-        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1"))))
-        val repository = LayoutRepository(InMemoryDocumentStore(stored))
-        repository.load()
-
-        assertFalse(repository.loadFailed.value)
-        assertNull(repository.recoveredPayload)
-    }
-
-    @Test
-    fun `a failed read is reported rather than treated as an empty store`() = runTest {
+    fun `a failed read is reported rather than treated as nothing stored`() = runTest {
         val store = object : DocumentStore {
-            override suspend fun read(): String? = throw IllegalStateException("disk error")
+            override suspend fun read(): String? = throw IllegalStateException("disk unreadable")
             override suspend fun write(json: String) = Unit
         }
         val repository = LayoutRepository(store)
+
         repository.load()
 
         assertEquals(LayoutDocument(), repository.document.value)
@@ -66,7 +57,7 @@ class LayoutRepositoryTest {
     }
 
     @Test
-    fun `an empty store does not report a failure`() = runTest {
+    fun `an empty store is not a failure`() = runTest {
         val repository = LayoutRepository(InMemoryDocumentStore(null))
         repository.load()
 
@@ -75,14 +66,9 @@ class LayoutRepositoryTest {
     }
 
     @Test
-    fun `a later successful load clears an earlier failure`() = runTest {
-        val store = InMemoryDocumentStore("{not json")
-        val repository = LayoutRepository(store)
-        repository.load()
-        assertTrue(repository.loadFailed.value)
-        assertEquals("{not json", repository.recoveredPayload)
-
-        store.write(DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1")))))
+    fun `a readable payload does not report a failure`() = runTest {
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1"))))
+        val repository = LayoutRepository(InMemoryDocumentStore(stored))
         repository.load()
 
         assertFalse(repository.loadFailed.value)
@@ -135,6 +121,35 @@ class LayoutRepositoryTest {
     }
 
     @Test
+    fun `concurrent updates are serialised so the last write wins`() = runTest {
+        val store = InMemoryDocumentStore()
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        repository.update { it.addSection("s1") }
+        repository.update { it.addSection("s2") }
+        repository.awaitPendingWrite()
+
+        assertEquals(listOf("s1", "s2"), repository.document.value.sections.map { it.id })
+        assertTrue(store.read()!!.contains("s2"))
+    }
+
+    @Test
+    fun `a later successful load clears an earlier failure`() = runTest {
+        val store = InMemoryDocumentStore("{not json")
+        val repository = LayoutRepository(store)
+        repository.load()
+        assertTrue(repository.loadFailed.value)
+        assertEquals("{not json", repository.recoveredPayload)
+
+        store.write(DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1")))))
+        repository.load()
+
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
+    }
+
+    @Test
     fun `a cancelled write is not reported as a write failure`() = runTest {
         val store = object : DocumentStore {
             override suspend fun read(): String? = null
@@ -150,16 +165,23 @@ class LayoutRepositoryTest {
     }
 
     @Test
-    fun `concurrent updates are serialised so the last write wins`() = runTest {
-        val store = InMemoryDocumentStore()
+    fun `an empty store clears a failure from an earlier failed read`() = runTest {
+        val store = object : DocumentStore {
+            var failRead = true
+            override suspend fun read(): String? {
+                if (failRead) { failRead = false; throw IllegalStateException("disk unreadable") }
+                return null
+            }
+            override suspend fun write(json: String) = Unit
+        }
         val repository = LayoutRepository(store)
+
+        repository.load()
+        assertTrue(repository.loadFailed.value)
+
         repository.load()
 
-        repository.update { it.addSection("s1") }
-        repository.update { it.addSection("s2") }
-        repository.awaitPendingWrite()
-
-        assertEquals(listOf("s1", "s2"), repository.document.value.sections.map { it.id })
-        assertTrue(store.read()!!.contains("s2"))
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
     }
 }
