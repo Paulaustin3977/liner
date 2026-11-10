@@ -3206,11 +3206,8 @@ object DefaultHomeDetector {
     /** Fires the system flow that lets the user make Liner the default home app. */
     fun requestDefaultHome(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val roleManager = context.getSystemService(RoleManager::class.java)
-            if (roleManager != null &&
-                roleManager.isRoleAvailable(RoleManager.ROLE_HOME) &&
-                !roleManager.isRoleHeld(RoleManager.ROLE_HOME)
-            ) {
+            val roleManager = runCatching { context.getSystemService(RoleManager::class.java) }.getOrNull()
+            if (roleManager != null && canRequestHomeRole(roleManager)) {
                 runCatching {
                     context.startActivity(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
                 }.onFailure { openHomeSettings(context) }
@@ -3219,6 +3216,16 @@ object DefaultHomeDetector {
         }
         openHomeSettings(context)
     }
+
+    /**
+     * True when the system offers the home role and Liner does not hold it yet.
+     *
+     * The role queries are remote calls, so a failure here falls back to the
+     * home settings screen rather than crashing the launcher.
+     */
+    private fun canRequestHomeRole(roleManager: RoleManager): Boolean = runCatching {
+        roleManager.isRoleAvailable(RoleManager.ROLE_HOME) && !roleManager.isRoleHeld(RoleManager.ROLE_HOME)
+    }.getOrDefault(false)
 
     private fun openHomeSettings(context: Context) {
         runCatching {
@@ -3279,7 +3286,8 @@ Expected: `BUILD SUCCESSFUL`, 4 tests, 0 failures.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add app/src/main/kotlin/dev/liner/launcher/platform app/src/test/kotlin/dev/liner/launcher/platform
+git add app/src/main/kotlin/dev/liner/launcher/platform app/src/test/kotlin/dev/liner/launcher/platform \
+        app/src/main/res/values-night
 git commit -m "feat(platform): add app launching, default-home detection, wallpaper and theme"
 ```
 
