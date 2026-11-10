@@ -38,13 +38,13 @@ object ImportValidator {
      * The document a payload describes, or null when it cannot be read.
      *
      * The codec lets Errors through on purpose — a bug in it must not be
-     * mistaken for a broken file. A deeply nested payload can raise a
-     * `StackOverflowError` though, and an import must never crash the
-     * launcher: the failure is turned into the explanation instead.
+     * mistaken for a broken file. This matches that contract and catches
+     * Exception only, so an Error inside the decoder surfaces instead of
+     * being reported to the user as an unreadable file.
      */
     private fun decode(raw: String): LayoutDocument? = try {
         DocumentCodec.decode(raw)
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
         null
     }
 
@@ -86,6 +86,11 @@ object ImportValidator {
      * The apps are named by their package, because that is what a layout
      * document holds — the name the user gave an app is not part of the
      * document.
+     *
+     * The sections are compared by their membership and their titles, not by
+     * their number alone: the same apps in another section, in another
+     * order, or under another title is a change the user has to be told
+     * about, because the import rearranges the home screen.
      */
     private fun summarise(current: LayoutDocument, incoming: LayoutDocument): List<String> {
         val changes = mutableListOf<String>()
@@ -97,6 +102,9 @@ object ImportValidator {
         val removed = currentPackages - incomingPackages
         if (added.isNotEmpty()) changes += "Adds apps: ${added.joinToString()}"
         if (removed.isNotEmpty()) changes += "Removes apps: ${removed.joinToString()}"
+
+        changes += sectionChanges(current, incoming)
+
         if (current.sections.size != incoming.sections.size) {
             changes += "Sections: ${current.sections.size} becomes ${incoming.sections.size}"
         }
@@ -105,4 +113,76 @@ object ImportValidator {
         if (changes.isEmpty()) changes += "No visible changes"
         return changes
     }
+
+    /**
+     * The changes between the two documents' sections.
+     *
+     * A section is recognised by its id, so the same section under another
+     * title, with another membership or in another order is a *changed*
+     * section — and a section that is only in one of the two documents is an
+     * added or a removed one.
+     */
+    private fun sectionChanges(current: LayoutDocument, incoming: LayoutDocument): List<String> {
+        val changes = mutableListOf<String>()
+        val currentById = current.sections.associateBy { it.id }
+
+        for (section in incoming.sections) {
+            val other = currentById[section.id]
+            if (other == null) {
+                changes += "Adds section \"${describe(section)}\""
+            } else if (section.title != other.title) {
+                changes += "Renames section \"${describe(other)}\" to \"${describe(section)}\""
+            }
+            changes += membershipChanges(other, section)
+            changes += orderChanges(other, section)
+        }
+
+        for (section in current.sections) {
+            if (incoming.sections.none { it.id == section.id }) {
+                changes += "Removes section \"${describe(section)}\""
+            }
+        }
+
+        return changes
+    }
+
+    /**
+     * The apps that left a section and the ones that joined it.
+     *
+     * An app that only moved to another section is not added or removed —
+     * it is somewhere else now, and that is what the user has to see.
+     */
+    private fun membershipChanges(before: Section?, after: Section): List<String> {
+        val there = before?.items?.map { it.packageName } ?: emptyList()
+        val here = after.items.map { it.packageName }
+        val lost = there - here.toSet()
+        val gained = here - there.toSet()
+
+        return buildList {
+            if (lost.isNotEmpty()) add("Section \"${describe(after)}\" loses ${lost.joinToString()}")
+            if (gained.isNotEmpty()) add("Section \"${describe(after)}\" gains ${gained.joinToString()}")
+        }
+    }
+
+    /**
+     * Whether the apps a section holds are in another order.
+     *
+     * Only the apps both sections hold are compared: the ones that moved
+     * away are reported by [membershipChanges].
+     */
+    private fun orderChanges(before: Section?, after: Section): List<String> {
+        val there = before?.items?.map { it.packageName } ?: emptyList()
+        val here = after.items.map { it.packageName }
+        val shared = there.filter { it in here }
+        val sharedHere = here.filter { it in there }
+
+        return if (shared != sharedHere) listOf("Reorders section \"${describe(after)}\"") else emptyList()
+    }
+
+    /**
+     * How a section is named in the summary: its title, or its id when it
+     * has no title of its own.
+     */
+    private fun describe(section: Section): String =
+        section.title?.takeIf { it.isNotBlank() } ?: section.id
 }

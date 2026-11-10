@@ -10,13 +10,13 @@ import dev.liner.launcher.model.InstalledApp
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.pruneUninstalledApps
 import dev.liner.launcher.store.LayoutRepository
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -55,46 +55,42 @@ class HomeViewModel(
     private val _appsLoaded = MutableStateFlow(false)
     val appsLoaded: StateFlow<Boolean> = _appsLoaded.asStateFlow()
 
-    /** Whether the saved document has finished its first load. */
-    private val _documentLoaded = MutableStateFlow(false)
-    val documentLoaded: StateFlow<Boolean> = _documentLoaded.asStateFlow()
-
     /**
-     * Completes once the stored document has been read into memory.
+     * Whether the saved document has finished its first load.
      *
-     * The auto-prune writes the document, so it may not run before that
-     * read: a write that lands first would persist the *default* document
-     * and throw the user's layout away.
+     * The signal is the repository's: the store is read once per process, so
+     * this screen's own [LayoutRepository.load] call can return before the
+     * document is in memory — when the settings screen claimed the read
+     * first.
      */
-    private val documentRead = CompletableDeferred<Unit>()
+    val documentLoaded: StateFlow<Boolean> = repository.documentLoaded
 
     init {
-        viewModelScope.launch {
-            try {
-                repository.load()
-            } finally {
-                _documentLoaded.value = true
-                documentRead.complete(Unit)
-            }
-        }
+        viewModelScope.launch { repository.load() }
         refreshApps()
     }
 
     fun refreshApps() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val apps = appsRepository.loadInstalledApps()
-                _installedApps.value = apps
+                // The prune may not run before the stored document is in
+                // memory: updating before then would persist the DEFAULT
+                // document over the user's stored layout. The signal comes
+                // from the repository, because a second caller's load()
+                // returns immediately without the document being loaded.
+                repository.documentLoaded.first { it }
+
+                val load = appsRepository.loadInstalledApps()
+                _installedApps.value = load.apps
                 // Auto-pruning removes home entries whose app is gone — but
                 // only from a query that really answered. A failed or
                 // filtered query must never be read as "every app was
                 // uninstalled", or the whole home screen would be deleted.
-                if (!appsRepository.lastLoadWasFallback()) {
-                    val installed = apps.mapTo(HashSet()) { it.packageName }
-                    // The prune writes the document, so it waits for the
-                    // stored document to be read: pruning before that would
-                    // persist the default document over the user's layout.
-                    documentRead.await()
+                // A failed READ is not evidence either: the in-memory
+                // document is then the default one, and writing it back
+                // would destroy the layout still on disk.
+                if (!load.wasFallback && !repository.loadFailed.value) {
+                    val installed = load.apps.mapTo(HashSet()) { it.packageName }
                     repository.update { doc -> doc.pruneUninstalledApps(installed) }
                 }
             } finally {

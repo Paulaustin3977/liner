@@ -100,7 +100,7 @@ class SettingsViewModel(
     fun refreshApps() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                _installedApps.value = appsRepository.loadInstalledApps()
+                _installedApps.value = appsRepository.loadInstalledApps().apps
             } finally {
                 // Even a failed query means "we have looked" — without this
                 // the UI would wait forever before showing its states.

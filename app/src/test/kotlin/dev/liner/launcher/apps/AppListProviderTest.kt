@@ -17,7 +17,7 @@ class AppListProviderTest {
     fun `a successful query is returned`() {
         val provider = AppListProvider { apps }
 
-        assertEquals(apps, provider.load())
+        assertEquals(apps, provider.load().apps)
     }
 
     @Test
@@ -27,10 +27,10 @@ class AppListProviderTest {
             if (shouldFail) throw IllegalStateException("package manager unavailable") else apps
         }
 
-        assertEquals(apps, provider.load())
+        assertEquals(apps, provider.load().apps)
 
         shouldFail = true
-        assertEquals(apps, provider.load())
+        assertEquals(apps, provider.load().apps)
     }
 
     @Test
@@ -39,7 +39,7 @@ class AppListProviderTest {
             throw IllegalStateException("package manager unavailable")
         }
 
-        assertTrue(provider.load().isEmpty())
+        assertTrue(provider.load().apps.isEmpty())
     }
 
     @Test
@@ -50,16 +50,16 @@ class AppListProviderTest {
         provider.load()
         empty = true
 
-        assertEquals(apps, provider.load())
+        assertEquals(apps, provider.load().apps)
     }
 
     @Test
     fun `a query that answers is not a fallback`() {
         val provider = AppListProvider { apps }
 
-        provider.load()
+        val load = provider.load()
 
-        assertFalse(provider.lastLoadWasFallback)
+        assertFalse(load.wasFallback)
     }
 
     @Test
@@ -68,18 +68,18 @@ class AppListProviderTest {
             throw IllegalStateException("package manager unavailable")
         }
 
-        provider.load()
+        val load = provider.load()
 
-        assertTrue(provider.lastLoadWasFallback)
+        assertTrue(load.wasFallback)
     }
 
     @Test
     fun `an empty result is a fallback`() {
         val provider = AppListProvider { emptyList() }
 
-        provider.load()
+        val load = provider.load()
 
-        assertTrue(provider.lastLoadWasFallback)
+        assertTrue(load.wasFallback)
     }
 
     @Test
@@ -89,13 +89,13 @@ class AppListProviderTest {
             if (shouldFail) throw IllegalStateException("package manager unavailable") else apps
         }
 
-        provider.load()
-        assertFalse(provider.lastLoadWasFallback)
+        val first = provider.load()
+        assertFalse(first.wasFallback)
 
         shouldFail = true
-        provider.load()
+        val second = provider.load()
 
-        assertTrue(provider.lastLoadWasFallback)
+        assertTrue(second.wasFallback)
     }
 
     @Test
@@ -103,12 +103,30 @@ class AppListProviderTest {
         var empty = false
         val provider = AppListProvider { if (empty) emptyList() else apps }
 
-        provider.load()
-        assertFalse(provider.lastLoadWasFallback)
+        val first = provider.load()
+        assertFalse(first.wasFallback)
 
         empty = true
-        provider.load()
+        val second = provider.load()
 
-        assertTrue(provider.lastLoadWasFallback)
+        assertTrue(second.wasFallback)
+    }
+
+    @Test
+    fun `the list and the trust flag travel together`() {
+        // The repository is shared between the home and the settings screen.
+        // Reading the list in one call and the flag in another could pick up
+        // a load the other screen performed in between — in the dangerous
+        // direction. One load carries both.
+        var empty = false
+        val provider = AppListProvider { if (empty) emptyList() else apps }
+
+        provider.load()
+        empty = true
+
+        val load = provider.load()
+
+        assertEquals(apps, load.apps)
+        assertTrue(load.wasFallback)
     }
 }

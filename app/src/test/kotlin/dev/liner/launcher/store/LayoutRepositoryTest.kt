@@ -6,6 +6,7 @@ import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.addSection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -218,14 +219,18 @@ class LayoutRepositoryTest {
 
     @Test
     fun `a burst of updates is persisted once, with the final state`() = runTest {
+        // A warm-up write on a throwaway repository pays the class-loading
+        // cost, so the measured burst below is not slowed down by the first
+        // write on a cold JVM. It is a write of its own, so the document the
+        // burst is measured on stays untouched.
+        val warmUp = LayoutRepository(CountingDocumentStore())
+        warmUp.load()
+        warmUp.update { it.addSection("warmup") }
+        warmUp.awaitPendingWrite()
+
         val store = CountingDocumentStore()
         val repository = LayoutRepository(store)
         repository.load()
-
-        // A warm-up update pays the class-loading cost, so the measured burst
-        // below is not slowed down by the first call on a cold JVM. It is
-        // superseded by the burst either way.
-        repository.update { it }
 
         // Dragging a settings slider fires an update per frame. The store
         // only ever needs the settled state of the gesture, so the burst has
@@ -245,6 +250,99 @@ class LayoutRepositoryTest {
         assertEquals(expected, repository.document.value.sections.map { it.id })
         val decoded = store.lastWritten?.let(DocumentCodec::decode)
         assertEquals(expected, decoded?.sections?.map { it.id })
+    }
+
+    @Test
+    fun `a transform that changed nothing does not write`() = runTest {
+        // The prune finds nothing stale on most resumes, and the switch is
+        // off on most of them: the transform returns the document it was
+        // given, and the store must not be rewritten for it.
+        val store = CountingDocumentStore()
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        repository.update { it }
+        repository.awaitPendingWrite()
+
+        assertEquals(0, store.writeCount)
+    }
+
+    @Test
+    fun `a transform that rebuilds an equal document is still written`() = runTest {
+        // The rule is the identity reference, not equality: a transform that
+        // rebuilds the document writes it, even when the result is equal.
+        val store = CountingDocumentStore()
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        repository.update { it.copy() }
+        repository.awaitPendingWrite()
+
+        assertEquals(1, store.writeCount)
+    }
+
+    @Test
+    fun `the document is not reported as loaded before the store is read`() = runTest {
+        val repository = LayoutRepository(InMemoryDocumentStore(null))
+
+        assertFalse(repository.documentLoaded.value)
+
+        repository.load()
+
+        assertTrue(repository.documentLoaded.value)
+    }
+
+    @Test
+    fun `the document is reported as loaded even when the read failed`() = runTest {
+        // Whether the read succeeded or failed, the caller has to know that
+        // the read is over: a failed read leaves the defaults in memory, and
+        // a write that followed would destroy the layout on the disk.
+        val store = object : DocumentStore {
+            override suspend fun read(): String? = throw IllegalStateException("disk unreadable")
+            override suspend fun write(json: String) = Unit
+        }
+        val repository = LayoutRepository(store)
+
+        repository.load()
+
+        assertTrue(repository.documentLoaded.value)
+        assertTrue(repository.loadFailed.value)
+    }
+
+    @Test
+    fun `a second caller waits for the document that is still being read`() = runTest {
+        // The store is read once per process, so a second caller's load()
+        // returns immediately — it cannot tell from its own call that the
+        // document is in memory yet. The repository's signal can: it stays
+        // false until the read has finished.
+        val entered = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1"))))
+        val store = object : DocumentStore {
+            override suspend fun read(): String? {
+                entered.complete(Unit)
+                gate.await()
+                return stored
+            }
+            override suspend fun write(json: String) = Unit
+        }
+        val repository = LayoutRepository(store)
+
+        val first = async { repository.load() }
+        // The read has started and is waiting for the gate.
+        entered.await()
+        assertFalse(repository.documentLoaded.value)
+
+        // The second caller gets the document the repository already holds —
+        // but the document is not in memory yet.
+        repository.load()
+        assertFalse(repository.documentLoaded.value)
+
+        gate.complete(Unit)
+        first.await()
+
+        assertTrue(repository.documentLoaded.value)
+        assertEquals(listOf("s1"), repository.document.value.sections.map { it.id })
     }
 }
 

@@ -114,4 +114,82 @@ class ImportExportTest {
         assertTrue("sections" in element)
         assertTrue("theme" in element)
     }
+
+    @Test
+    fun `the summary reports an app that moved to another section`() {
+        // The apps are the same, so the package sets do not differ — but the
+        // home screen is rearranged, and the user has to be told.
+        val incoming = LayoutDocument(
+            sections = listOf(
+                Section(id = "s1", title = "Mine"),
+                Section(id = "s2", title = "Work", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+            ),
+        )
+
+        val result = ImportValidator.validate(DocumentCodec.encode(incoming), current)
+
+        assertTrue(result.summary.any { it.contains("Work") && it.contains("p.a") })
+        assertTrue(result.summary.any { it.contains("Mine") && it.contains("p.a") })
+    }
+
+    @Test
+    fun `the summary reports a renamed section`() {
+        val incoming = LayoutDocument(
+            sections = listOf(
+                Section(id = "s1", title = "Yours", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+            ),
+        )
+
+        val result = ImportValidator.validate(DocumentCodec.encode(incoming), current)
+
+        assertTrue(result.summary.any { it.contains("Mine") && it.contains("Yours") })
+    }
+
+    @Test
+    fun `the summary reports a section whose apps are in another order`() {
+        val two = LayoutDocument(
+            sections = listOf(
+                Section(
+                    id = "s1",
+                    title = "Mine",
+                    items = listOf(
+                        HomeItem(id = "a", packageName = "p.a"),
+                        HomeItem(id = "b", packageName = "p.b"),
+                    ),
+                ),
+            ),
+        )
+        val reordered = LayoutDocument(
+            sections = listOf(
+                Section(
+                    id = "s1",
+                    title = "Mine",
+                    items = listOf(
+                        HomeItem(id = "b", packageName = "p.b"),
+                        HomeItem(id = "a", packageName = "p.a"),
+                    ),
+                ),
+            ),
+        )
+
+        val result = ImportValidator.validate(DocumentCodec.encode(reordered), two)
+
+        assertTrue(result.summary.any { it.contains("Reorders") })
+    }
+
+    @Test
+    fun `the summary reports a section that is only in the imported layout`() {
+        val incoming = current.copy(sections = current.sections + Section(id = "s2", title = "Work"))
+
+        val result = ImportValidator.validate(DocumentCodec.encode(incoming), current)
+
+        assertTrue(result.summary.any { it.contains("Adds") && it.contains("Work") })
+    }
+
+    @Test
+    fun `the summary reports a section that is only in the current layout`() {
+        val result = ImportValidator.validate(DocumentCodec.encode(LayoutDocument()), current)
+
+        assertTrue(result.summary.any { it.contains("Removes") && it.contains("Mine") })
+    }
 }

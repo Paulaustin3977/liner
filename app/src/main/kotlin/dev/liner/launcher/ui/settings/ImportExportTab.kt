@@ -90,10 +90,21 @@ fun ImportExportTab(
     // Checks a payload and offers it to the user. The summary is what the
     // user sees before their layout is replaced.
     fun offer(raw: String) {
-        val result = ImportValidator.validate(raw, document)
-        val imported = result.document
+        val result = try {
+            ImportValidator.validate(raw, document)
+        } catch (_: Error) {
+            // The validator lets Errors through on purpose: a bug inside the
+            // decoder must not be shown to the user as a broken file. It must
+            // still not take the launcher down, so the failure is reported
+            // as the unexpected failure it is.
+            null
+        }
+        val imported = result?.document
         if (imported == null) {
-            failure = Failure("Import failed", result.error ?: "That file is not readable as a Liner layout.")
+            failure = Failure(
+                "Import failed",
+                result?.error ?: "The import could not be completed.",
+            )
         } else {
             pending = PendingImport(imported, result.summary)
         }
@@ -165,7 +176,7 @@ fun ImportExportTab(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        onUpdate { import.document }
+                        onUpdate { importedDocument(import.document) }
                         pending = null
                     },
                 ) { Text("Import") }
@@ -194,6 +205,16 @@ private data class PendingImport(
     val document: LayoutDocument,
     val summary: List<String>,
 )
+
+/**
+ * The document an import stores.
+ *
+ * The payload keeps the version it was written with, and a v0 document
+ * stored as a v0 document would skip every future migration. It is stored
+ * at the version this build understands.
+ */
+internal fun importedDocument(document: LayoutDocument): LayoutDocument =
+    document.copy(version = LayoutDocument.CURRENT_VERSION)
 
 /** A failure the user has to be told about. */
 private data class Failure(

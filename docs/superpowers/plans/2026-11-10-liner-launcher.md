@@ -2679,41 +2679,41 @@ class LayoutRepository(private val store: DocumentStore) {
 
     private suspend fun readFromStore() {
         try {
-        var readFailed = false
-        val raw = try {
-            store.read()
-        } catch (_: Throwable) {
-            // The read itself failed — that is not the same as "nothing
-            // stored", and the user's layout must not be reported as if it
-            // had never existed.
-            readFailed = true
-            null
-        }
+            var readFailed = false
+            val raw = try {
+                store.read()
+            } catch (_: Throwable) {
+                // The read itself failed — that is not the same as "nothing
+                // stored", and the user's layout must not be reported as if it
+                // had never existed.
+                readFailed = true
+                null
+            }
 
-        if (raw == null) {
-            // Nothing stored is not a failure, so the flag is cleared here
-            // rather than left over from an earlier failed load.
-            recoveredPayload = null
-            _loadFailed.value = readFailed
-            _document.value = LayoutDocument()
-            return
-        }
+            if (raw == null) {
+                // Nothing stored is not a failure, so the flag is cleared here
+                // rather than left over from an earlier failed load.
+                recoveredPayload = null
+                _loadFailed.value = readFailed
+                _document.value = LayoutDocument()
+                return
+            }
 
-        val decoded = try {
-            DocumentCodec.decode(raw)
-        } catch (_: Throwable) {
-            null
-        }
+            val decoded = try {
+                DocumentCodec.decode(raw)
+            } catch (_: Throwable) {
+                null
+            }
 
-        if (decoded == null) {
-            recoveredPayload = raw
-            _loadFailed.value = true
-            _document.value = LayoutDocument()
-        } else {
-            recoveredPayload = null
-            _loadFailed.value = false
-            _document.value = decoded
-        }
+            if (decoded == null) {
+                recoveredPayload = raw
+                _loadFailed.value = true
+                _document.value = LayoutDocument()
+            } else {
+                recoveredPayload = null
+                _loadFailed.value = false
+                _document.value = decoded
+            }
         } finally {
             // Whether the read succeeded or failed, the document has been
             // dealt with: a failed read leaves the defaults in memory, and
@@ -2749,6 +2749,15 @@ class LayoutRepository(private val store: DocumentStore) {
         }
     }
 
+    /**
+     * Applies [transform] to the in-memory document and persists the result.
+     *
+     * A transform that changed nothing queues no write: the transform is
+     * expected to return the document it was given when there is nothing to
+     * change — the identity reference is what says so, so a transform that
+     * rebuilds an equal document is still written. That keeps a no-op edit
+     * (a prune that finds nothing stale, say) from rewriting the store.
+     */
     fun update(transform: (LayoutDocument) -> LayoutDocument) {
         val current = _document.value
         val next = transform(current)
@@ -3061,16 +3070,9 @@ package dev.liner.launcher.apps
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import dev.liner.launcher.model.InstalledApp
 
-/**
- * The state machine behind [InstalledAppsRepository]: remembers the last
- * successful list and falls back to it when a query fails.
- *
- * Deliberately free of Android types — it takes a query *function* — so the
- * fallback is unit-testable on the JVM, which is the only way to prove the
- * launcher survives a failing package manager.
- */
 /**
  * The result of an app query: the apps, and whether the list really
  * came from the package manager.
@@ -3084,11 +3086,28 @@ data class AppLoad(
     val wasFallback: Boolean,
 )
 
+/**
+ * The state machine behind [InstalledAppsRepository]: remembers the last
+ * successful list and falls back to it when a query fails.
+ *
+ * Deliberately free of Android types — it takes a query *function* — so the
+ * fallback is unit-testable on the JVM, which is the only way to prove the
+ * launcher survives a failing package manager.
+ */
 class AppListProvider(private val query: () -> List<InstalledApp>) {
 
     @Volatile
     private var lastSuccessful: List<InstalledApp> = emptyList()
 
+    /**
+     * The apps of the most recent query, and whether they really came from
+     * the package manager.
+     *
+     * A fallback list is never evidence that an app was uninstalled: it
+     * covers a failed query and one that came back empty because the OS
+     * filtered the package visibility. Neither may be used to decide that an
+     * app is gone.
+     */
     fun load(): AppLoad = try {
         val apps = query()
         if (apps.isNotEmpty()) {
@@ -3129,7 +3148,14 @@ class InstalledAppsRepository(context: Context) {
 
     private fun queryInstalledApps(): List<InstalledApp> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        return packageManager.queryIntentActivities(intent, 0)
+        return packageManager.queryIntentActivities(
+            intent,
+            // A disabled app is still installed: the user switched it off,
+            // they did not remove it. Without this flag the query leaves it
+            // out, and the auto-prune would delete the user's home entry for
+            // an app that is still on the device.
+            PackageManager.MATCH_DISABLED_COMPONENTS,
+        )
             .mapNotNull { resolved ->
                 val info = resolved.activityInfo ?: return@mapNotNull null
                 // A label that is null, or that throws because the package was
@@ -4128,18 +4154,18 @@ class HomeViewModel(
     private val _appsLoaded = MutableStateFlow(false)
     val appsLoaded: StateFlow<Boolean> = _appsLoaded.asStateFlow()
 
-    /** Whether the saved document has finished its first load. */
-    private val _documentLoaded = MutableStateFlow(false)
-    val documentLoaded: StateFlow<Boolean> = _documentLoaded.asStateFlow()
+    /**
+     * Whether the saved document has finished its first load.
+     *
+     * The signal is the repository's: the store is read once per process, so
+     * this screen's own [LayoutRepository.load] call can return before the
+     * document is in memory — when the settings screen claimed the read
+     * first.
+     */
+    val documentLoaded: StateFlow<Boolean> = repository.documentLoaded
 
     init {
-        viewModelScope.launch {
-            try {
-                repository.load()
-            } finally {
-                _documentLoaded.value = true
-            }
-        }
+        viewModelScope.launch { repository.load() }
         refreshApps()
     }
 
@@ -7111,6 +7137,11 @@ Create `model/ImportValidator.kt`:
 ```kotlin
 package dev.liner.launcher.model
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+
 data class ImportResult(
     val document: LayoutDocument?,
     val error: String?,
@@ -7124,15 +7155,68 @@ object ImportValidator {
      * be used; returns a document plus a human readable summary otherwise.
      */
     fun validate(raw: String, current: LayoutDocument = LayoutDocument()): ImportResult {
-        val decoded = DocumentCodec.decode(raw) ?: return ImportResult(
+        val decoded = decode(raw) ?: return ImportResult(
             document = null,
-            error = "That file is not readable as a Liner layout.",
+            error = explain(raw),
             summary = emptyList(),
         )
 
         return ImportResult(document = decoded, error = null, summary = summarise(current, decoded))
     }
 
+    /**
+     * The document a payload describes, or null when it cannot be read.
+     *
+     * The codec lets Errors through on purpose — a bug in it must not be
+     * mistaken for a broken file. This matches that contract and catches
+     * Exception only, so an Error inside the decoder surfaces instead of
+     * being reported to the user as an unreadable file.
+     */
+    private fun decode(raw: String): LayoutDocument? = try {
+        DocumentCodec.decode(raw)
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * The explanation for a payload the codec refused.
+     *
+     * The codec refuses two different things: a payload it cannot read, and
+     * a payload from a newer version of Liner. They need different
+     * explanations — one is a broken file, the other is a file this build
+     * must not overwrite its own layout with.
+     */
+    private fun explain(raw: String): String {
+        val version = declaredVersion(raw)
+        return if (version != null && version > LayoutDocument.CURRENT_VERSION) {
+            "That layout was made by a newer version of Liner, so this version cannot read it."
+        } else {
+            "That file is not readable as a Liner layout."
+        }
+    }
+
+    /**
+     * The version a payload declares, or null when it declares none.
+     */
+    private fun declaredVersion(raw: String): Int? = try {
+        val element = Json.parseToJsonElement(raw)
+        (element as? JsonObject)?.get("version")?.jsonPrimitive?.intOrNull
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * What the imported layout would change about the current one.
+     *
+     * The apps are named by their package, because that is what a layout
+     * document holds — the name the user gave an app is not part of the
+     * document.
+     *
+     * The sections are compared by their membership and their titles, not by
+     * their number alone: the same apps in another section, in another
+     * order, or under another title is a change the user has to be told
+     * about, because the import rearranges the home screen.
+     */
     private fun summarise(current: LayoutDocument, incoming: LayoutDocument): List<String> {
         val changes = mutableListOf<String>()
 
@@ -7143,6 +7227,9 @@ object ImportValidator {
         val removed = currentPackages - incomingPackages
         if (added.isNotEmpty()) changes += "Adds apps: ${added.joinToString()}"
         if (removed.isNotEmpty()) changes += "Removes apps: ${removed.joinToString()}"
+
+        changes += sectionChanges(current, incoming)
+
         if (current.sections.size != incoming.sections.size) {
             changes += "Sections: ${current.sections.size} becomes ${incoming.sections.size}"
         }
@@ -7151,6 +7238,75 @@ object ImportValidator {
         if (changes.isEmpty()) changes += "No visible changes"
         return changes
     }
+
+    /**
+     * The changes between the two documents' sections.
+     *
+     * A section is recognised by its id, so the same section under another
+     * title, with another membership or in another order is a *changed*
+     * section — and a section that is only in one of the two documents is an
+     * added or a removed one.
+     */
+    private fun sectionChanges(current: LayoutDocument, incoming: LayoutDocument): List<String> {
+        val changes = mutableListOf<String>()
+        val currentById = current.sections.associateBy { it.id }
+
+        for (section in incoming.sections) {
+            val other = currentById[section.id]
+            if (other == null) {
+                changes += "Adds section \"${describe(section)}\""
+            } else if (section.title != other.title) {
+                changes += "Renames section \"${describe(other)}\" to \"${describe(section)}\""
+            }
+            changes += membershipChanges(other, section)
+            changes += orderChanges(other, section)
+        }
+
+        for (section in current.sections) {
+            if (incoming.sections.none { it.id == section.id }) {
+                changes += "Removes section \"${describe(section)}\""
+            }
+        }
+
+        return changes
+    }
+
+    /**
+     * The apps that left a section and the ones that joined it.
+     *
+     * An app that only moved to another section is not added or removed —
+     * it is somewhere else now, and that is what the user has to see.
+     */
+    private fun membershipChanges(before: Section?, after: Section): List<String> {
+        val there = before?.items?.map { it.packageName } ?: emptyList()
+        val here = after.items.map { it.packageName }
+        val lost = there - here.toSet()
+        val gained = here - there.toSet()
+
+        return buildList {
+            if (lost.isNotEmpty()) add("Section \"${describe(after)}\" loses ${lost.joinToString()}")
+            if (gained.isNotEmpty()) add("Section \"${describe(after)}\" gains ${gained.joinToString()}")
+        }
+    }
+
+    /**
+     * Whether the apps a section holds are in another order.
+     */
+    private fun orderChanges(before: Section?, after: Section): List<String> {
+        val there = before?.items?.map { it.packageName } ?: emptyList()
+        val here = after.items.map { it.packageName }
+        val shared = there.filter { it in here }
+        val sharedHere = here.filter { it in there }
+
+        return if (shared != sharedHere) listOf("Reorders section \"${describe(after)}\"") else emptyList()
+    }
+
+    /**
+     * How a section is named in the summary: its title, or its id when it
+     * has no title of its own.
+     */
+    private fun describe(section: Section): String =
+        section.title?.takeIf { it.isNotBlank() } ?: section.id
 }
 ```
 
@@ -7211,7 +7367,7 @@ fun ImportExportTab(
                 val raw = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: return@TextButton
                 val result = ImportValidator.validate(raw, document)
                 if (result.document != null) {
-                    onUpdate { result.document }
+                    onUpdate { importedDocument(result.document) }
                 }
             },
         ) { Text("Import from clipboard") }
@@ -7222,6 +7378,16 @@ fun ImportExportTab(
         )
     }
 }
+
+/**
+ * The document an import stores.
+ *
+ * The payload keeps the version it was written with, and a v0 document
+ * stored as a v0 document would skip every future migration. It is stored
+ * at the version this build understands.
+ */
+internal fun importedDocument(document: LayoutDocument): LayoutDocument =
+    document.copy(version = LayoutDocument.CURRENT_VERSION)
 
 private fun shareLayout(context: Context, document: LayoutDocument) {
     val json = DocumentCodec.encode(document)
@@ -7246,6 +7412,7 @@ private fun shareLayout(context: Context, document: LayoutDocument) {
 ```kotlin
 package dev.liner.launcher.ui.settings
 
+import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Column
@@ -7255,12 +7422,25 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.setAutoPruneUninstalled
 import dev.liner.launcher.platform.DefaultHomeDetector
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun AdvancedTab(
@@ -7268,10 +7448,13 @@ fun AdvancedTab(
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
 ) {
     val context = LocalContext.current
-    val isDefault = DefaultHomeDetector.isDefaultHome(context)
+    // The answer is asked in an effect, off the main thread, and it starts
+    // out unknown: null means "not known yet", and the banner waits for it
+    // rather than flashing before the answer arrives.
+    val isDefault = rememberDefaultHome(context)
 
     Column(Modifier.fillMaxWidth()) {
-        if (!isDefault) {
+        if (isDefault == false) {
             Text(
                 text = "Liner is not your default launcher.",
                 modifier = Modifier.padding(top = 8.dp),
@@ -7311,6 +7494,45 @@ fun AdvancedTab(
         ) { Text("Reset everything") }
     }
 }
+
+/**
+ * Whether Liner is the default home app, or null while the answer is still
+ * on its way.
+ *
+ * The answer needs a round trip to the role manager or the package manager,
+ * so it is asked off the main thread and after the composition: the banner
+ * must not flash before the answer arrives.
+ */
+@Composable
+private fun rememberDefaultHome(context: Context): Boolean? {
+    var isDefaultHome by remember { mutableStateOf<Boolean?>(null) }
+    val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Asked once when the tab appears.
+    LaunchedEffect(context) {
+        isDefaultHome = withContext(Dispatchers.IO) {
+            DefaultHomeDetector.isDefaultHome(context)
+        }
+    }
+
+    // …and again whenever the screen comes back to the foreground.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                scope.launch {
+                    isDefaultHome = withContext(Dispatchers.IO) {
+                        DefaultHomeDetector.isDefaultHome(context)
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    return isDefaultHome
+}
 ```
 
 - [ ] **Step 6: Close the gaps the review found**
@@ -7323,10 +7545,21 @@ while the import rearranges the home screen. The spec asks for "sections
 changed" to be summarised. Compare the section membership and titles, not
 just the count.
 
+> The implementation compares the sections by their id. A section that is
+> only in one of the two documents is an added or a removed one; a section
+> that is in both is a *changed* one when its title, its membership or the
+> order of its apps changed. The summary says so in words: "Adds section
+> "Work"", "Removes section "Mine"", "Renames section "Mine" to "Yours"",
+> "Section "Mine" loses p.a", "Section "Work" gains p.a" and "Reorders
+> section "Mine"".
+
 **6.2 An imported document must be stored at the current version.** The commit
 is `onUpdate { import.document }`, so a v0 payload is stored with
 `version = 0` forever, and a future v1→v2 migration would be skipped for it.
 Commit `import.document.copy(version = LayoutDocument.CURRENT_VERSION)`.
+
+> The commit goes through `importedDocument(document)`, which is that copy —
+> it is a named function so the rule can be pinned by a test.
 
 **6.3 `ImportValidator` must not swallow `Error`s.** It catches `Throwable`,
 so a genuine bug inside the decoder is reported to the user as "That file is
@@ -7337,12 +7570,21 @@ StackOverflowError justification does not hold: kotlinx-serialization-json
 switches to a trampolined scope at a nesting depth of 200, so a deeply nested
 payload does not overflow the stack.)
 
+> The tab that calls the validator catches the `Error` itself and reports it
+> as the unexpected failure it is — the launcher still must not crash, and
+> the failure must not be shown as "not readable as a Liner layout".
+
 **6.4 The default-home check must not run a binder call in composition.**
 `DefaultHomeDetector.isDefaultHome(context)` does a `RoleManager.isRoleHeld`
 (API 29+) or a `PackageManager.resolveActivity` round trip, evaluated inside
 `remember { … }` on the main thread the first time the tab is composed.
 Resolve it in a `LaunchedEffect` and start from an *unknown* state, so the
 banner does not flash before the answer arrives.
+
+> The answer is `Boolean?` — null means "not known yet" — and it is asked off
+> the main thread. The banner is shown only when the answer is known *and* it
+> is "not the default", so nothing flashes while the answer is on its way.
+> The question is asked again on every resume, as before.
 
 **6.5 The prune must not delete a disabled app.** `queryIntentActivities`
 excludes disabled components, so an app the user has disabled is missing from
@@ -7422,7 +7664,7 @@ class HomeScreenTest {
 
     @Test
     fun installedAppsCanBeEnumerated() {
-        val apps = dev.liner.launcher.apps.InstalledAppsRepository(context).loadInstalledApps()
+        val apps = dev.liner.launcher.apps.InstalledAppsRepository(context).loadInstalledApps().apps
 
         // The test app itself is launchable, so the list is never empty.
         assertTrue(apps.isNotEmpty())
@@ -7482,7 +7724,7 @@ class DrawerTest {
 
     @Test
     fun theDrawerListsEveryInstalledApp() {
-        val installed = dev.liner.launcher.apps.InstalledAppsRepository(context).loadInstalledApps()
+        val installed = dev.liner.launcher.apps.InstalledAppsRepository(context).loadInstalledApps().apps
 
         val visible = AppCatalog.drawerApps(dev.liner.launcher.model.LayoutDocument(), installed)
 
@@ -7491,7 +7733,7 @@ class DrawerTest {
 
     @Test
     fun filteringNarrowsTheList() {
-        val installed = dev.liner.launcher.apps.InstalledAppsRepository(context).loadInstalledApps()
+        val installed = dev.liner.launcher.apps.InstalledAppsRepository(context).loadInstalledApps().apps
 
         val result = AppFilter.filter(installed, "zzzz-no-such-app")
 
@@ -7500,7 +7742,7 @@ class DrawerTest {
 
     @Test
     fun iconsLoadWithoutThrowing() {
-        val installed = dev.liner.launcher.apps.InstalledAppsRepository(context).loadInstalledApps()
+        val installed = dev.liner.launcher.apps.InstalledAppsRepository(context).loadInstalledApps().apps
         val cache = dev.liner.launcher.apps.IconCache(context.packageManager, 96)
 
         // Must not throw, whatever the icons look like.

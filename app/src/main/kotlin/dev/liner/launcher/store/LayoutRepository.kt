@@ -47,6 +47,19 @@ class LayoutRepository(private val store: DocumentStore) {
 
     private val _loadFailed = MutableStateFlow(false)
 
+    private val _documentLoaded = MutableStateFlow(false)
+
+    /**
+     * True once the store has been read into memory.
+     *
+     * The signal belongs to the repository, not to a caller of [load]: the
+     * store is read once per process, so a second caller's [load] returns
+     * immediately — a caller that waited on its own call would proceed
+     * before the document was actually in memory, and a write it triggered
+     * would persist the default document over the user's stored layout.
+     */
+    val documentLoaded: StateFlow<Boolean> = _documentLoaded.asStateFlow()
+
     /** Whether the store has already been read into memory. */
     private val loaded = AtomicBoolean(false)
 
@@ -112,40 +125,47 @@ class LayoutRepository(private val store: DocumentStore) {
     }
 
     private suspend fun readFromStore() {
-        var readFailed = false
-        val raw = try {
-            store.read()
-        } catch (_: Throwable) {
-            // The read itself failed — that is not the same as "nothing
-            // stored", and the user's layout must not be reported as if it
-            // had never existed.
-            readFailed = true
-            null
-        }
+        try {
+            var readFailed = false
+            val raw = try {
+                store.read()
+            } catch (_: Throwable) {
+                // The read itself failed — that is not the same as "nothing
+                // stored", and the user's layout must not be reported as if it
+                // had never existed.
+                readFailed = true
+                null
+            }
 
-        if (raw == null) {
-            // Nothing stored is not a failure, so the flag is cleared here
-            // rather than left over from an earlier failed load.
-            recoveredPayload = null
-            _loadFailed.value = readFailed
-            _document.value = LayoutDocument()
-            return
-        }
+            if (raw == null) {
+                // Nothing stored is not a failure, so the flag is cleared here
+                // rather than left over from an earlier failed load.
+                recoveredPayload = null
+                _loadFailed.value = readFailed
+                _document.value = LayoutDocument()
+                return
+            }
 
-        val decoded = try {
-            DocumentCodec.decode(raw)
-        } catch (_: Throwable) {
-            null
-        }
+            val decoded = try {
+                DocumentCodec.decode(raw)
+            } catch (_: Throwable) {
+                null
+            }
 
-        if (decoded == null) {
-            recoveredPayload = raw
-            _loadFailed.value = true
-            _document.value = LayoutDocument()
-        } else {
-            recoveredPayload = null
-            _loadFailed.value = false
-            _document.value = decoded
+            if (decoded == null) {
+                recoveredPayload = raw
+                _loadFailed.value = true
+                _document.value = LayoutDocument()
+            } else {
+                recoveredPayload = null
+                _loadFailed.value = false
+                _document.value = decoded
+            }
+        } finally {
+            // Whether the read succeeded or failed, the document has been
+            // dealt with: a failed read leaves the defaults in memory, and
+            // the caller must know that too.
+            _documentLoaded.value = true
         }
     }
 
@@ -176,8 +196,22 @@ class LayoutRepository(private val store: DocumentStore) {
         }
     }
 
+    /**
+     * Applies [transform] to the in-memory document and persists the result.
+     *
+     * A transform that changed nothing queues no write: the transform is
+     * expected to return the document it was given when there is nothing to
+     * change — the identity reference is what says so, so a transform that
+     * rebuilds an equal document is still written. That keeps a no-op edit
+     * (a prune that finds nothing stale, say) from rewriting the store.
+     */
     fun update(transform: (LayoutDocument) -> LayoutDocument) {
-        val next = transform(_document.value)
+        val current = _document.value
+        val next = transform(current)
+        // A transform that changed nothing must not queue a write: the store
+        // would be rewritten for no reason — once per launcher resume, for a
+        // no-op prune, for instance.
+        if (next === current) return
         _document.value = next
 
         val done = CompletableDeferred<Unit>()
