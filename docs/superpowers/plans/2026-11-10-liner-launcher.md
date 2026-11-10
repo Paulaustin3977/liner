@@ -36,7 +36,12 @@ Every task below implicitly includes these. Values are copied verbatim from the 
   - Feeding the drawer `AppCatalog.drawerApps(...)` output into `AppFilter.filter(...)`,
     because `AppFilter` preserves input order — filtering an unsorted list would
     lose the alphabetical ordering.
-- The `ui` layer never reads raw theme tokens; it consumes `StyleResolver` output only.
+- The `ui` layer never reads raw theme *style* tokens; it consumes `StyleResolver`
+  output only. `StyleResolver` exposes every styling decision — the item and
+  section-header styles, the theme text colour, the section-title case and rule
+  flags, and the icon size — so no composable reaches into `ThemeTokens` to
+  decide how something looks. Layout structure (alignment, padding, spacing,
+  clock size) is read from `ThemeTokens` directly and is not a style decision.
 - **Only `material-icons-core` is available** — not `material-icons-extended`. The full extended set adds ~37 MB to the APK for icons this app never uses. Use a core icon (`Icons.Default.Settings` is in core) or a text label instead.
 - No crashes on: missing app, failed icon load, failed DataStore write, corrupt JSON, `PackageManager` throwing.
 - Unit tests live in `app/src/test/kotlin/dev/liner/launcher/` and must run headless via `gradle test`.
@@ -1808,6 +1813,24 @@ object StyleResolver {
         letterSpacingEm = 0.12f,
         colorArgb = (theme.sectionTitleColor as? ColorSpec.Solid)?.argb,
     )
+
+    /**
+     * The theme's text colour, used by the clock and the chrome. The `ui`
+     * layer consumes this instead of reading [ThemeTokens.textColor]
+     * directly — the resolver is the only place theme tokens are interpreted.
+     * A null result means "follow the system", which the caller resolves
+     * against the current light/dark configuration.
+     */
+    fun resolveTextColor(theme: ThemeTokens): Int? =
+        (theme.textColor as? ColorSpec.Solid)?.argb
+
+    fun resolveSectionTitleUppercase(theme: ThemeTokens): Boolean =
+        theme.sectionTitleUppercase
+
+    fun resolveSectionTitleRule(theme: ThemeTokens): Boolean =
+        theme.sectionTitleRule
+
+    fun resolveIconSizeDp(theme: ThemeTokens): Int = theme.iconSizeDp
 }
 ```
 
@@ -3298,7 +3321,11 @@ package dev.liner.launcher.platform
 
 import android.app.WallpaperManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.drawable.Drawable
+import kotlin.math.max
+import kotlin.math.min
 
 object WallpaperProvider {
     /** Returns the system wallpaper, or null when it cannot be read. Never throws. */
@@ -3312,6 +3339,39 @@ object WallpaperProvider {
         // a plain background rather than the launcher failing to start.
         try {
             WallpaperManager.getInstance(context).getDrawable(WallpaperManager.FLAG_SYSTEM)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * The system wallpaper as a bitmap no larger than [maxWidth] x [maxHeight].
+     *
+     * The raw drawable is often several thousand pixels on a side;
+     * rasterising it at full size costs tens of megabytes and can fail with
+     * an [OutOfMemoryError] — which is an [Error], not an [Exception], and
+     * would otherwise escape every `catch (e: Exception)` guard. The
+     * drawable is therefore scaled down to the display size before it is
+     * rasterised, and every failure, including an OOM, is swallowed.
+     */
+    fun loadBitmap(context: Context, maxWidth: Int, maxHeight: Int): Bitmap? {
+        val drawable = load(context) ?: return null
+        return try {
+            val intrinsicWidth = drawable.intrinsicWidth
+            val intrinsicHeight = drawable.intrinsicHeight
+            if (intrinsicWidth <= 0 || intrinsicHeight <= 0) return null
+            val scale = minOf(
+                maxWidth.toFloat() / intrinsicWidth,
+                maxHeight.toFloat() / intrinsicHeight,
+                1f,
+            )
+            val width = max(1, (intrinsicWidth * scale).toInt())
+            val height = max(1, (intrinsicHeight * scale).toInt())
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, width, height)
+            drawable.draw(canvas)
+            bitmap
         } catch (_: Throwable) {
             null
         }
@@ -3358,14 +3418,15 @@ git commit -m "feat(platform): add app launching, default-home detection, wallpa
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/home/{HomeScreen,HomeViewModel}.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/{LabelRow,SectionHeaderRow}.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/BackgroundLayer.kt`
+- Create: `app/src/test/kotlin/dev/liner/launcher/ui/common/GradientEndpointsTest.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/platform/LauncherActivity.kt`
 
 **Interfaces:**
 - Consumes: Task 4's `AppCatalog`/`StyleResolver`/`ClockFormatter`, Task 6's `LayoutRepository`, Task 8's `LinerTheme`.
 - Produces:
   - `class HomeViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val homeEntries: StateFlow<List<HomeEntry>>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
-  - `@Composable fun HomeScreen(viewModel: HomeViewModel, wallpaper: Drawable?, iconCache: IconCache, onLaunch: (HomeEntry) -> Unit, onOpenSettings: (String?) -> Unit, onRecoverLayout: (String) -> Unit)`
-  - `@Composable fun BackgroundLayer(spec: BackgroundSpec, wallpaper: Drawable?)`
+  - `@Composable fun HomeScreen(viewModel: HomeViewModel, wallpaper: Bitmap?, iconCache: IconCache, onLaunch: (HomeEntry) -> Unit, onOpenSettings: (String?) -> Unit, onRecoverLayout: (String) -> Unit)`
+  - `@Composable fun BackgroundLayer(spec: BackgroundSpec, wallpaper: Bitmap?, systemTextColor: Color, systemBackgroundColor: Color)`
   - `@Composable fun LabelRow(text: String, style: ResolvedStyle, alignment: Alignment.Horizontal, icon: ImageBitmap?, iconSizeDp: Int, enabled: Boolean)`
   - `@Composable fun SectionHeaderRow(title: String, style: ResolvedStyle, uppercase: Boolean, showRule: Boolean)`
 
@@ -3413,7 +3474,70 @@ class HomeViewModelStateTest {
 
 - [ ] **Step 2: Run the test**
 
-Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*HomeViewModelStateTest*'`
+`app/src/test/kotlin/dev/liner/launcher/ui/common/GradientEndpointsTest.kt` — pins the
+angle convention, which is otherwise only visible on a device:
+
+```kotlin
+package dev.liner.launcher.ui.common
+
+import androidx.compose.ui.geometry.Offset
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class GradientEndpointsTest {
+
+    @Test
+    fun `angle zero runs top to bottom`() {
+        val (start, end) = gradientEndpoints(angleDegrees = 0, width = 100f, height = 200f)
+        assertEquals(start.x, end.x, 0.001f)
+        assertTrue("the gradient must start at the top", start.y < end.y)
+    }
+
+    @Test
+    fun `angle ninety runs left to right`() {
+        val (start, end) = gradientEndpoints(angleDegrees = 90, width = 100f, height = 200f)
+        assertEquals(start.y, end.y, 0.001f)
+        assertTrue("the gradient must start at the left", start.x < end.x)
+    }
+
+    @Test
+    fun `angle one eighty runs bottom to top`() {
+        val (start, end) = gradientEndpoints(angleDegrees = 180, width = 100f, height = 200f)
+        assertEquals(start.x, end.x, 0.001f)
+        assertTrue("the gradient must start at the bottom", start.y > end.y)
+    }
+
+    @Test
+    fun `the gradient passes through the centre`() {
+        val (start, end) = gradientEndpoints(angleDegrees = 37, width = 100f, height = 200f)
+        assertEquals(50f, (start.x + end.x) / 2f, 0.001f)
+        assertEquals(100f, (start.y + end.y) / 2f, 0.001f)
+    }
+
+    @Test
+    fun `the gradient turns clockwise`() {
+        // The end point must sit right of and below the start point at an
+        // intermediate angle. The cardinal cases above cannot catch a
+        // flipped sign, which would mirror every non-cardinal angle.
+        val (start, end) = gradientEndpoints(angleDegrees = 45, width = 100f, height = 200f)
+        assertTrue("the gradient must turn to the right", end.x > start.x)
+        assertTrue("the gradient must turn downwards", end.y > start.y)
+    }
+
+    @Test
+    fun `the angle is preserved on a wide screen`() {
+        // Scaling the two axes independently would skew the angle; the
+        // endpoints must keep the requested direction on any aspect ratio.
+        val (start, end) = gradientEndpoints(angleDegrees = 45, width = 400f, height = 100f)
+        val dx = end.x - start.x
+        val dy = end.y - start.y
+        assertEquals(1f, dx / dy, 0.01f)
+    }
+}
+```
+
+Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*HomeViewModelStateTest*' --tests '*GradientEndpointsTest*'`
 
 Expected: `BUILD SUCCESSFUL`, 2 tests, 0 failures. This test pins the contract that the view model will use.
 
@@ -3431,11 +3555,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import kotlin.math.cos
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import dev.liner.launcher.model.BackgroundSpec
@@ -3446,6 +3574,7 @@ fun BackgroundLayer(
     spec: BackgroundSpec,
     wallpaper: Drawable?,
     systemTextColor: Color,
+    systemBackgroundColor: Color,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -3454,37 +3583,33 @@ fun BackgroundLayer(
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .background(spec.color.toColor(systemTextColor)),
+                        .background(spec.color.toColor(fallback = systemBackgroundColor)),
                 )
             }
 
             is BackgroundSpec.Gradient -> {
-                val from = spec.from.toColor(systemTextColor)
-                val to = spec.to.toColor(systemTextColor)
-                // The angle is measured clockwise from vertical: 0 runs
-                // top-to-bottom (from at the top), 90 runs left-to-right.
-                val radians = Math.toRadians(spec.angleDegrees.toDouble())
-                val dx = sin(radians).toFloat()
-                val dy = cos(radians).toFloat()
+                val from = spec.from.toColor(fallback = systemBackgroundColor)
+                val to = spec.to.toColor(fallback = systemBackgroundColor)
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(from, to),
-                                start = Offset(0.5f - dx * 0.5f, 0.5f - dy * 0.5f),
-                                end = Offset(0.5f + dx * 0.5f, 0.5f + dy * 0.5f),
-                            ),
-                        ),
+                        .drawBehind {
+                            val (start, end) = gradientEndpoints(spec.angleDegrees, size.width, size.height)
+                            drawRect(
+                                brush = Brush.linearGradient(
+                                    colors = listOf(from, to),
+                                    start = start,
+                                    end = end,
+                                ),
+                            )
+                        },
                 )
             }
 
             is BackgroundSpec.Wallpaper -> {
                 if (wallpaper != null) {
                     Image(
-                        bitmap = androidx.compose.ui.graphics.asImageBitmap(
-                            wallpaper.toBitmap(width = 1080, height = 1920),
-                        ),
+                        bitmap = wallpaper.asImageBitmap(),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
@@ -3506,21 +3631,46 @@ fun BackgroundLayer(
     }
 }
 
-/** Maps a [ColorSpec] to a concrete colour, resolving "follow system" to [fallback]. */
+/**
+ * The endpoints of a linear gradient whose direction is [angleDegrees]
+ * measured clockwise from vertical: 0 runs top-to-bottom, 90 runs
+ * left-to-right, 180 runs bottom-to-top.
+ *
+ * The line is scaled isotropically — its length is the CSS "magic corner"
+ * value `|w·sinθ| + |h·cosθ|` — so the on-screen direction is exactly the
+ * requested angle on any aspect ratio. Scaling the two axes independently
+ * would skew every non-cardinal angle.
+ *
+ * The endpoints are in pixels, because that is what
+ * [Brush.linearGradient] expects.
+ */
+internal fun gradientEndpoints(
+    angleDegrees: Int,
+    width: Float,
+    height: Float,
+): Pair<Offset, Offset> {
+    val radians = Math.toRadians(angleDegrees.toDouble())
+    val dx = sin(radians).toFloat()
+    val dy = cos(radians).toFloat()
+    val length = abs(width * dx) + abs(height * dy)
+    val halfX = dx * length / 2f
+    val halfY = dy * length / 2f
+    val cx = width / 2f
+    val cy = height / 2f
+    return Offset(cx - halfX, cy - halfY) to Offset(cx + halfX, cy + halfY)
+}
+
+/**
+ * Maps a [ColorSpec] to a concrete colour, resolving "follow system" to
+ * [fallback]. A background must fall back to the *background* colour, not
+ * the text colour — falling back to the text colour would paint a
+ * near-white label colour as the background and make the text unreadable.
+ */
 fun ColorSpec.toColor(fallback: Color): Color = when (this) {
     is ColorSpec.Solid -> Color(argb)
     ColorSpec.FollowSystem -> fallback
 }
 
-private fun Drawable.toBitmap(width: Int, height: Int): android.graphics.Bitmap {
-    val w = if (intrinsicWidth > 0) intrinsicWidth else width
-    val h = if (intrinsicHeight > 0) intrinsicHeight else height
-    val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
-    val canvas = android.graphics.Canvas(bitmap)
-    setBounds(0, 0, w, h)
-    draw(canvas)
-    return bitmap
-}
 ```
 
 - [ ] **Step 4: Implement the shared rows**
@@ -3691,14 +3841,36 @@ class HomeViewModel(
             AppCatalog.homeEntries(doc, apps.associateBy { it.packageName })
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /**
+     * Whether the installed-app list has finished its first query. Until it
+     * has, an empty list means "not loaded yet", not "no apps" — the UI must
+     * not flash the empty state or grey out every row during that window.
+     */
+    val appsLoaded: StateFlow<Boolean> = MutableStateFlow(false)
+
+    /** Whether the saved document has finished its first load. */
+    val documentLoaded: StateFlow<Boolean> = MutableStateFlow(false)
+
     init {
-        viewModelScope.launch { repository.load() }
+        viewModelScope.launch {
+            try {
+                repository.load()
+            } finally {
+                documentLoaded.value = true
+            }
+        }
         refreshApps()
     }
 
     fun refreshApps() {
         viewModelScope.launch(Dispatchers.IO) {
-            _installedApps.value = appsRepository.loadInstalledApps()
+            try {
+                _installedApps.value = appsRepository.loadInstalledApps()
+            } finally {
+                // Even a failed query means "we have looked" — without this
+                // the UI would wait forever before showing its states.
+                appsLoaded.value = true
+            }
         }
     }
 
@@ -3763,7 +3935,7 @@ import java.time.ZoneId
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel,
-    wallpaper: Drawable?,
+    wallpaper: Bitmap?,
     iconCache: IconCache,
     onLaunch: (HomeEntry) -> Unit,
     onOpenSettings: (String?) -> Unit,
@@ -3773,6 +3945,13 @@ fun HomeScreen(
     val entries by viewModel.homeEntries.collectAsStateWithLifecycle()
     val loadFailed by viewModel.loadFailed.collectAsStateWithLifecycle()
     val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
+    val appsLoaded by viewModel.appsLoaded.collectAsStateWithLifecycle()
+    val documentLoaded by viewModel.documentLoaded.collectAsStateWithLifecycle()
+
+    // Until the app query has finished, an empty list means "not loaded yet"
+    // rather than "no apps" — showing the empty state then would flash it on
+    // every cold start.
+    val stillLoading = !appsLoaded || !documentLoaded
 
     // A failed save must not be silent — the spec requires a notice.
     val writeContext = androidx.compose.ui.platform.LocalContext.current
@@ -3803,6 +3982,10 @@ fun HomeScreen(
     }
     val theme = document.theme
     val systemTextColor = MaterialTheme.colorScheme.onBackground
+    val systemBackgroundColor = MaterialTheme.colorScheme.background
+    // The clock takes the theme's text colour, resolved through the same
+    // path as every other style decision.
+    val chromeColor = StyleResolver.resolveTextColor(theme)?.let { Color(it) } ?: systemTextColor
 
     val horizontalAlignment = when (theme.alignment) {
         "center" -> Alignment.CenterHorizontally
@@ -3811,9 +3994,14 @@ fun HomeScreen(
     }
 
     Box(Modifier.fillMaxSize()) {
-        BackgroundLayer(spec = theme.background, wallpaper = wallpaper, systemTextColor = systemTextColor)
+        BackgroundLayer(
+            spec = theme.background,
+            wallpaper = wallpaper,
+            systemTextColor = systemTextColor,
+            systemBackgroundColor = systemBackgroundColor,
+        )
 
-        if (entries.isEmpty()) {
+        if (entries.isEmpty() && !stillLoading) {
             // Nothing chosen yet: point the user at the Apps tab rather than
             // showing a blank screen.
             Column(
@@ -3834,7 +4022,7 @@ fun HomeScreen(
                     vertical = theme.screenPaddingVdp.dp,
                 ),
         ) {
-            ClockDateHeader(theme)
+            ClockDateHeader(theme, chromeColor)
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -3842,19 +4030,23 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(theme.itemSpacingDp.dp),
             ) {
                 document.sections.forEach { section ->
-                    if (section.title != null) {
+                    val sectionEntries = entries.filter { it.sectionId == section.id }
+                    // An empty section keeps no header — the spec keeps it as an
+                    // untitled group, and a blank title is no title at all.
+                    val title = section.title?.takeIf { it.isNotBlank() }
+                    if (title != null && sectionEntries.isNotEmpty()) {
                         item(key = "header-${section.id}") {
                             SectionHeaderRow(
-                                title = section.title,
+                                title = title,
                                 style = StyleResolver.resolveSectionHeaderStyle(theme),
-                                uppercase = theme.sectionTitleUppercase,
-                                showRule = theme.sectionTitleRule,
+                                uppercase = StyleResolver.resolveSectionTitleUppercase(theme),
+                                showRule = StyleResolver.resolveSectionTitleRule(theme),
                             )
                         }
                     }
                     items(
-                        items = entries.filter { it.sectionId == section.id },
-                        key = { it.item.id },
+                        items = sectionEntries,
+                        key = { "${section.id}:${it.item.id}" },
                     ) { entry ->
                         // Icons are opt-in: the home screen is icon-free by default.
                         val icon = if (theme.showIcons) {
@@ -3869,7 +4061,7 @@ fun HomeScreen(
                             style = StyleResolver.resolveItemStyle(theme, entry.item.style),
                             alignment = horizontalAlignment,
                             icon = icon,
-                            iconSizeDp = theme.iconSizeDp,
+                            iconSizeDp = StyleResolver.resolveIconSizeDp(theme),
                             enabled = entry.available,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -3883,7 +4075,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun ClockDateHeader(theme: ThemeTokens) {
+private fun ClockDateHeader(theme: ThemeTokens, textColor: Color) {
     if (theme.clockStyle == "hidden") return
 
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -3901,11 +4093,18 @@ private fun ClockDateHeader(theme: ThemeTokens) {
     Column(Modifier.fillMaxWidth()) {
         Text(
             text = ClockFormatter.formatTime(now, zone, use24Hour),
-            style = TextStyle(fontSize = clockSize.sp, fontWeight = FontWeight.Light),
+            style = TextStyle(
+                fontSize = clockSize.sp,
+                fontWeight = FontWeight.Light,
+                color = textColor,
+            ),
         )
         val date = ClockFormatter.formatDate(now, zone, theme.dateStyle)
         if (date != null) {
-            Text(text = date, style = TextStyle(fontSize = dateSize.sp))
+            Text(
+                text = date,
+                style = TextStyle(fontSize = dateSize.sp, color = textColor),
+            )
         }
         Spacer(Modifier.height(16.dp))
     }
