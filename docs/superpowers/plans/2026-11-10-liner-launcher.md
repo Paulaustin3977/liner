@@ -2637,16 +2637,20 @@ import dev.liner.launcher.model.InstalledApp
 /**
  * Reads the launchable apps installed on the device.
  *
- * Never throws: a failed query returns an empty list so the drawer degrades
- * to "no apps" instead of crashing the launcher.
+ * Never throws. A failed query falls back to the last successful list rather
+ * than showing the user an empty drawer — the launcher must keep working
+ * when the package manager is briefly unavailable.
  */
 class InstalledAppsRepository(context: Context) {
 
     private val packageManager = context.applicationContext.packageManager
 
+    @Volatile
+    private var lastSuccessful: List<InstalledApp> = emptyList()
+
     fun loadInstalledApps(): List<InstalledApp> = try {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        packageManager.queryIntentActivities(intent, 0)
+        val apps = packageManager.queryIntentActivities(intent, 0)
             .mapNotNull { resolved ->
                 val info = resolved.activityInfo ?: return@mapNotNull null
                 InstalledApp(
@@ -2656,8 +2660,10 @@ class InstalledAppsRepository(context: Context) {
                 )
             }
             .distinctBy { it.packageName to it.activityClass }
+        lastSuccessful = apps
+        apps
     } catch (_: Throwable) {
-        emptyList()
+        lastSuccessful
     }
 }
 ```
@@ -2678,9 +2684,12 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 
 /**
- * Caches app icons rasterised to a bitmap of a fixed size.
- * A failed load returns null rather than throwing, so the caller can render
- * the app label instead.
+ * Caches app icons rasterised to a bitmap.
+ *
+ * The bitmap keeps the drawable's intrinsic resolution, falling back to
+ * [sizePx] only when the drawable reports no size of its own — that keeps
+ * adaptive icons crisp when the UI scales them down. A failed load returns
+ * null rather than throwing, so the caller can render the app label instead.
  */
 class IconCache(
     private val packageManager: PackageManager,
