@@ -165,10 +165,16 @@ fun HomeScreen(
             ?: return
         val index = section.items.indexOfFirst { it.id == itemId }
         val item = section.items[index]
+        // The snackbar names the app the way the home screen does: the user's
+        // rename, else the app's own label, and only the package name when
+        // nothing else is known.
+        val label = viewModel.homeEntries.value.firstOrNull { it.item.id == itemId }?.displayLabel
+            ?: item.label
+            ?: item.packageName
         viewModel.update { it.removeItem(itemId) }
         scope.launch {
             val result = snackbarHostState.showSnackbar(
-                message = "Removed ${item.label ?: item.packageName}",
+                message = "Removed $label",
                 actionLabel = "Undo",
                 duration = SnackbarDuration.Short,
             )
