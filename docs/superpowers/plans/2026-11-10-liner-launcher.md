@@ -2716,17 +2716,18 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
 
     fun load(): List<InstalledApp> = try {
         val apps = query()
-        // An empty result is not a successful result: some OEMs surface
-        // restricted package visibility as an empty list rather than an
-        // error, and adopting that would blank the drawer and destroy the
-        // cache. A device always has at least one launchable activity — its
-        // own launcher.
         if (apps.isNotEmpty()) {
             lastSuccessful = apps
-        } else if (lastSuccessful.isEmpty()) {
-            lastSuccessful = apps
+            apps
+        } else {
+            // An empty result is not a successful result: some OEMs surface
+            // restricted package visibility as an empty list rather than an
+            // error, and adopting that would blank the drawer and destroy the
+            // cache. A device always has at least one launchable activity —
+            // its own launcher — so an empty list means the query was
+            // filtered, and the remembered list stands in for it.
+            apps.ifEmpty { lastSuccessful }
         }
-        apps
     } catch (_: Throwable) {
         lastSuccessful
     }
