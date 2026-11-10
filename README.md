@@ -19,7 +19,8 @@ device.
 
 The first launch shows a one-time prompt offering to make Liner your home
 app. It goes away for good once you dismiss it or once Liner *is* the default
-home app.
+home app. If you dismiss it, you can still make Liner your default launcher
+later from Settings → Advanced.
 
 ## Build from source
 
@@ -92,6 +93,7 @@ the built APKs, the keystore or any local build output.
   family, size, weight, letter spacing, row spacing, padding, alignment,
   clock and date styles, section header styling, optional icons
 - Per-item style overrides that beat the global theme
+- A one-time prompt on the first launch, offering to make Liner your home app
 - Import and export your layout as JSON
 - Handles uninstalled apps, corrupt saves and failed writes without crashing
 
@@ -133,6 +135,14 @@ before Liner takes over somebody's home screen.
 apps in order to launch them. This is the standard exemption granted to
 launchers and is covered by the Play Store policy for apps that register for
 `CATEGORY_HOME`.
+
+## Documentation
+
+- [`MANUAL_TEST.md`](MANUAL_TEST.md) — the manual test script
+- [`docs/superpowers/specs/2026-11-10-liner-launcher-design.md`](docs/superpowers/specs/2026-11-10-liner-launcher-design.md)
+  — the design spec the app was built from
+- [`docs/superpowers/plans/2026-11-10-liner-launcher.md`](docs/superpowers/plans/2026-11-10-liner-launcher.md)
+  — the build plan
 
 ## License
 
