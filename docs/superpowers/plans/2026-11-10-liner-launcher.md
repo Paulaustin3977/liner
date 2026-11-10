@@ -7313,13 +7313,50 @@ fun AdvancedTab(
 }
 ```
 
-- [ ] **Step 6: Run the tests and build**
+- [ ] **Step 6: Close the gaps the review found**
+
+**6.1 The import summary must report what actually changed.** It compares the
+package *sets* and the section *count*, so two documents with the same apps in
+a different section, in a different order, or with different section titles
+produce an empty change list — the confirm dialog says "No visible changes"
+while the import rearranges the home screen. The spec asks for "sections
+changed" to be summarised. Compare the section membership and titles, not
+just the count.
+
+**6.2 An imported document must be stored at the current version.** The commit
+is `onUpdate { import.document }`, so a v0 payload is stored with
+`version = 0` forever, and a future v1→v2 migration would be skipped for it.
+Commit `import.document.copy(version = LayoutDocument.CURRENT_VERSION)`.
+
+**6.3 `ImportValidator` must not swallow `Error`s.** It catches `Throwable`,
+so a genuine bug inside the decoder is reported to the user as "That file is
+not readable as a Liner layout." `DocumentCodec.decode` deliberately lets
+`Error`s through so a bug does not look like a broken file — the validator
+must match that contract and catch `Exception` instead. (The comment's
+StackOverflowError justification does not hold: kotlinx-serialization-json
+switches to a trampolined scope at a nesting depth of 200, so a deeply nested
+payload does not overflow the stack.)
+
+**6.4 The default-home check must not run a binder call in composition.**
+`DefaultHomeDetector.isDefaultHome(context)` does a `RoleManager.isRoleHeld`
+(API 29+) or a `PackageManager.resolveActivity` round trip, evaluated inside
+`remember { … }` on the main thread the first time the tab is composed.
+Resolve it in a `LaunchedEffect` and start from an *unknown* state, so the
+banner does not flash before the answer arrives.
+
+**6.5 The prune must not delete a disabled app.** `queryIntentActivities`
+excludes disabled components, so an app the user has disabled is missing from
+the list and its home entry is deleted when auto-prune is on. Query with
+`PackageManager.MATCH_DISABLED_COMPONENTS` so a disabled app is still counted
+as installed.
+
+- [ ] **Step 7: Run the tests and build**
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest :app:assembleDebug`
 
 Expected: `BUILD SUCCESSFUL`, 4 import tests pass.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add app/src/main/kotlin/dev/liner/launcher/model app/src/main/kotlin/dev/liner/launcher/store \
