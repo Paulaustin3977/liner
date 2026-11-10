@@ -22,6 +22,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -32,6 +33,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import dev.liner.launcher.model.AppCatalog
@@ -43,24 +45,14 @@ import dev.liner.launcher.model.ItemBounds
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.addItem
 import dev.liner.launcher.model.addSection
-import dev.liner.launcher.model.homeOrderWithMovedItem
 import dev.liner.launcher.model.moveItem
 import dev.liner.launcher.model.removeItem
-import dev.liner.launcher.model.reorderHomeItems
 import dev.liner.launcher.model.sectionById
 import dev.liner.launcher.model.setHiddenFromDrawer
 import dev.liner.launcher.ui.common.SectionChooserSheet
 import dev.liner.launcher.ui.common.dragIndicatorTop
 import dev.liner.launcher.ui.home.EditModeController
 import java.util.UUID
-
-/**
- * The section the reorder list gives every row.
- *
- * The list is the flat home order, so the sections do not matter to the drag
- * maths — one synthetic section keeps every row in the same list.
- */
-private const val FLAT_SECTION = "home-order"
 
 /**
  * The apps tab: every installed app with a checkbox for the home screen, the
@@ -128,6 +120,14 @@ fun AppsTab(
         }
     }
 
+    // The one commit of a finished drag: the app moves to the section and the
+    // slot the insertion indicator showed. It is the move the home screen
+    // makes, so a drag that crosses a section boundary moves the app into
+    // the other section instead of quietly doing nothing.
+    fun commitMove(itemId: String, target: DragTarget) {
+        onUpdate { doc -> moveItemToTarget(doc, itemId, target) }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth(),
@@ -154,8 +154,9 @@ fun AppsTab(
         LazyColumn(Modifier.weight(1f)) {
             item(key = "home-order") {
                 HomeOrderBlock(
+                    document = document,
                     entries = homeEntries,
-                    onReorder = { newOrder -> onUpdate { doc -> doc.reorderHomeItems(newOrder) } },
+                    onMove = { itemId, target -> commitMove(itemId, target) },
                 )
             }
             item(key = "all-apps") {
@@ -240,27 +241,57 @@ fun AppsTab(
 }
 
 /**
- * The order of the home screen, with the apps that are on it.
+ * The move a finished drag commits.
+ *
+ * The target is the slot the insertion indicator showed. A
+ * [DragTarget.InSection] is a slot inside a section — the app moves to that
+ * slot, and stays in its section. A [DragTarget.PreviousSection] is the end
+ * of the section above the dragged app, so the app moves *into* that
+ * section: a drag that crosses a section boundary moves the app across, the
+ * same way the home screen's drag does.
+ */
+internal fun moveItemToTarget(
+    document: LayoutDocument,
+    itemId: String,
+    target: DragTarget,
+): LayoutDocument = when (target) {
+    is DragTarget.InSection -> document.moveItem(itemId, target.sectionId, target.index)
+    is DragTarget.PreviousSection -> document.moveItem(
+        itemId,
+        target.sectionId,
+        document.sectionById(target.sectionId)?.items?.size ?: 0,
+    )
+}
+
+/**
+ * The order of the home screen, grouped by section exactly as the home screen
+ * shows it: the apps of a section under its title, the sections in the
+ * document's order.
  *
  * A long press starts a drag. The list is not reordered while the finger
  * moves — the dragged app keeps its slot and an insertion indicator shows
- * where it would land — and the new order is committed once, when the finger
- * is released.
+ * where it would land — and the move is committed once, when the finger is
+ * released.
+ *
+ * The drop target comes from [dev.liner.launcher.model.DragTargeting], the
+ * same maths the home screen uses, and the commit is the same `moveItem`
+ * call, so a drag can cross a section boundary: dropping an app above a
+ * section moves it into the section above.
  */
 @Composable
 private fun HomeOrderBlock(
+    document: LayoutDocument,
     entries: List<HomeEntry>,
-    onReorder: (List<String>) -> Unit,
+    onMove: (itemId: String, target: DragTarget) -> Unit,
 ) {
     val editController = remember { EditModeController() }
-    // The flat home order, and the section every row belongs to for the drag
-    // maths: the list is one list, so the sections do not matter here.
-    val sectionOrder = remember { listOf(FLAT_SECTION) }
-    val order = remember(entries) { entries.map { it.item.id } }
-    // The drag callback is built once, so it reads the order as it is now
-    // rather than the copy it was built with.
-    val currentOrder by rememberUpdatedState(order)
-    val currentReorder by rememberUpdatedState(onReorder)
+    // The document's section order. The drag maths needs the real sections —
+    // one synthetic section for the whole list would refuse every drag that
+    // crosses a section boundary.
+    val sectionOrder = document.sections.map { it.id }
+    // The move callback is read as it is now, not as it was when the row was
+    // composed.
+    val currentMove by rememberUpdatedState(onMove)
 
     Box(Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth()) {
@@ -269,7 +300,8 @@ private fun HomeOrderBlock(
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
-                text = "Long-press an app to move it.",
+                text = "Long-press an app to move it. Drag it up over a section title " +
+                    "to move it into the section above.",
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(bottom = 4.dp),
             )
@@ -279,15 +311,35 @@ private fun HomeOrderBlock(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            entries.forEach { entry ->
-                HomeOrderRow(
-                    entry = entry,
-                    editController = editController,
-                    sectionOrder = sectionOrder,
-                    onDrop = { index ->
-                        currentReorder(homeOrderWithMovedItem(currentOrder, entry.item.id, index))
-                    },
+            document.sections.forEachIndexed { sectionIndex, section ->
+                // The apps of this section, in home order. The home screen
+                // takes them the same way — a hand-edited layout can repeat
+                // a section id, and then both sections show the same apps.
+                val sectionEntries = entries
+                    .filter { it.sectionId == section.id }
+                    .distinctBy { it.item.id }
+                // An empty section has nothing to show — the home screen
+                // shows one neither.
+                if (sectionEntries.isEmpty()) return@forEachIndexed
+                Text(
+                    text = section.title?.takeIf { it.isNotBlank() } ?: "Untitled",
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
                 )
+                sectionEntries.forEach { entry ->
+                    // The section index keeps the key unique even when a
+                    // hand-edited layout repeats a section id.
+                    key("$sectionIndex:${entry.item.id}") {
+                        HomeOrderRow(
+                            entry = entry,
+                            editController = editController,
+                            sectionOrder = sectionOrder,
+                            onDrop = { target -> currentMove(entry.item.id, target) },
+                        )
+                    }
+                }
             }
         }
 
@@ -325,8 +377,13 @@ private fun HomeOrderRow(
     entry: HomeEntry,
     editController: EditModeController,
     sectionOrder: List<String>,
-    onDrop: (Int) -> Unit,
+    onDrop: (DragTarget) -> Unit,
 ) {
+    // The section order is read as it is now: a drag must see the sections
+    // the document has, not the ones it had when the row was composed.
+    val currentSectionOrder by rememberUpdatedState(sectionOrder)
+    val currentDrop by rememberUpdatedState(onDrop)
+
     // The row's origin in the list. The pointer's position is relative to
     // the row, so the two together give the finger's place in the list.
     var rowOrigin by remember(entry.item.id) { mutableStateOf(Offset.Zero) }
@@ -344,7 +401,7 @@ private fun HomeOrderRow(
                 rowOrigin = origin
                 editController.bounds[entry.item.id] = ItemBounds(
                     id = entry.item.id,
-                    sectionId = FLAT_SECTION,
+                    sectionId = entry.sectionId,
                     top = origin.y,
                     bottom = origin.y + coordinates.size.height,
                 )
@@ -359,16 +416,14 @@ private fun HomeOrderRow(
                     onDrag = { change, _ ->
                         change.consume()
                         val finger = rowOrigin + change.position
-                        editController.updateDrag(finger.y, sectionOrder)
+                        editController.updateDrag(finger.y, currentSectionOrder)
                     },
                     onDragEnd = {
-                        // The one commit of the drag: the order is written
+                        // The one commit of the drag: the move is written
                         // once, when the finger is released.
                         val target = editController.endDrag()
                         editController.exitEditMode()
-                        if (target is DragTarget.InSection) {
-                            onDrop(target.index)
-                        }
+                        if (target != null) currentDrop(target)
                     },
                     onDragCancel = {
                         editController.endDrag()
@@ -382,10 +437,6 @@ private fun HomeOrderRow(
         Text(
             text = entry.displayLabel,
             modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = entry.sectionTitle ?: "Untitled",
-            style = MaterialTheme.typography.bodySmall,
         )
     }
 }
