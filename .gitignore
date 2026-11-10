@@ -2,6 +2,9 @@
 .plugin-cache/
 build/
 .gradle/
+.gradle-home/
 *.apk
 *.keystore
 *.jks
+local.properties
+keystore.properties
