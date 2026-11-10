@@ -121,6 +121,28 @@ class DocumentEditsTest {
     }
 
     @Test
+    fun `reorderHomeItems keeps unlisted items in their previous relative order`() {
+        // Ids are deliberately in reverse alphabetical order so that sorting by
+        // id and sorting by previous position give different answers.
+        val document = LayoutDocument(
+            sections = listOf(
+                Section(
+                    id = "s1",
+                    items = listOf(
+                        HomeItem(id = "z", packageName = "p.z"),
+                        HomeItem(id = "y", packageName = "p.y"),
+                        HomeItem(id = "x", packageName = "p.x"),
+                    ),
+                ),
+            ),
+        )
+
+        val result = document.reorderHomeItems(listOf("z"))
+
+        assertEquals(listOf("z", "y", "x"), result.sections[0].items.map { it.id })
+    }
+
+    @Test
     fun `reorderHomeItems ignores ids that are not on the home screen`() {
         val result = doc().reorderHomeItems(listOf("c", "b", "a", "unknown"))
 

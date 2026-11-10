@@ -56,17 +56,19 @@ fun LayoutDocument.addItem(item: HomeItem, sectionId: String, index: Int = Int.M
 /**
  * Applies a desired flat order of home item ids. Items keep their section,
  * but their order inside that section follows [flatOrder]. Ids not present in
- * [flatOrder] are placed after the listed ones, ordered by id.
+ * [flatOrder] keep their previous relative position at the end of their
+ * section — the tiebreaker is the item's previous index, not its id.
  */
 fun LayoutDocument.reorderHomeItems(flatOrder: List<String>): LayoutDocument {
     if (flatOrder.isEmpty()) return this
     val position = flatOrder.withIndex().associate { (index, id) -> id to index }
 
     return copy(sections = sections.map { s ->
+        val previousIndex = s.items.withIndex().associate { (index, item) -> item.id to index }
         val ordered = s.items.sortedWith(
             compareBy(
                 { position[it.id] ?: Int.MAX_VALUE },
-                { it.id },
+                { previousIndex[it.id] ?: Int.MAX_VALUE },
             ),
         )
         s.copy(items = ordered)
