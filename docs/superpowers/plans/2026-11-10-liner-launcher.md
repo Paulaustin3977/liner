@@ -5759,7 +5759,11 @@ fun AppearanceTab(
                     value = background.angleDegrees.toFloat(),
                     range = 0f..360f,
                     steps = 359,
-                    onValueChange = { angle -> onThemeChange { current -> current.withGradient { it.copy(angleDegrees = angle.toInt()) } } },
+                    // roundToInt, not toInt: the slider's tick value is a
+                    // float that can land a hair below the tick, and
+                    // truncation would store one degree less than the tick
+                    // the user aimed at.
+                    onValueChange = { angle -> onThemeChange { current -> current.withGradient { it.copy(angleDegrees = angle.roundToInt()) } } },
                 )
             }
 
@@ -5916,7 +5920,8 @@ fun AppearanceTab(
             value = theme.iconSizeDp.toFloat(),
             range = 16f..64f,
             steps = 47,
-            onValueChange = { size -> onThemeChange { it.copy(iconSizeDp = size.toInt()) } },
+            // roundToInt, not toInt — see the angle slider above.
+            onValueChange = { size -> onThemeChange { it.copy(iconSizeDp = size.roundToInt()) } },
         )
 
         ChoiceRow(
