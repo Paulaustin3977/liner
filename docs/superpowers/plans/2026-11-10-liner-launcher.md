@@ -44,6 +44,12 @@ Every task below implicitly includes these. Values are copied verbatim from the 
   clock size) is read from `ThemeTokens` directly and is not a style decision.
 - **Only `material-icons-core` is available** — not `material-icons-extended`. The full extended set adds ~37 MB to the APK for icons this app never uses. Use a core icon (`Icons.Default.Settings` is in core) or a text label instead.
 - No crashes on: missing app, failed icon load, failed DataStore write, corrupt JSON, `PackageManager` throwing.
+- **A failed save is always reported.** Every screen that writes to the document
+  observes the repository's `writeFailed` flag and shows a notice — a silent
+  failure would leave the user believing a change was saved when it was not.
+- **The layout store is read once per process.** `LayoutRepository.load()` is
+  idempotent: a second read would race the writer and could discard an edit
+  that has not been persisted yet.
 - **Removing a single item from the home screen is always undoable.** The
   trash zone and the item editor's Remove button raise a snackbar with an
   Undo action that puts the item back where it was. Deleting a *section*
@@ -2191,7 +2197,7 @@ git commit -m "feat(model): add pure drag-target computation"
   - `interface DocumentStore { suspend fun read(): String?; suspend fun write(json: String) }`
   - `class InMemoryDocumentStore(initial: String? = null) : DocumentStore` (test double, lives in main so the instrumentation tests can use it too)
   - `class DataStoreDocumentStore(context: Context) : DocumentStore`
-  - `class LayoutRepository(store: DocumentStore)` with `val document: StateFlow<LayoutDocument>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `var recoveredPayload: String?` (private setter), `suspend fun load()`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
+  - `class LayoutRepository(store: DocumentStore)` with `val document: StateFlow<LayoutDocument>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `var recoveredPayload: String?` (private setter), `suspend fun load()` (reads the store once per process), `fun update(transform: (LayoutDocument) -> LayoutDocument)`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2391,6 +2397,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -2420,6 +2427,9 @@ class LayoutRepository(private val store: DocumentStore) {
     val writeFailed: StateFlow<Boolean> = _writeFailed.asStateFlow()
 
     private val _loadFailed = MutableStateFlow(false)
+
+    /** Whether the store has already been read into memory. */
+    private val loaded = AtomicBoolean(false)
 
     /** True when the stored layout could not be read and the defaults were used instead. */
     val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
@@ -2466,6 +2476,23 @@ class LayoutRepository(private val store: DocumentStore) {
      * reset instead of quietly losing it.
      */
     suspend fun load() {
+        // The store is read once per process. A second load would race the
+        // writer: an edit that has been applied in memory but not yet
+        // written to the store would be discarded by the older stored value.
+        // Later screens therefore get the document the repository already
+        // holds.
+        if (!loaded.compareAndSet(false, true)) return
+        readFromStore()
+    }
+
+    /**
+     * Test hook: re-reads the store, ignoring the once-per-process guard.
+     */
+    internal suspend fun reload() {
+        readFromStore()
+    }
+
+    private suspend fun readFromStore() {
         var readFailed = false
         val raw = try {
             store.read()
@@ -5273,8 +5300,8 @@ git commit -m "feat(ui): add edit mode with drag reorder, rename and remove"
 **Interfaces:**
 - Consumes: Task 3's `updateTheme`, Task 8's `FONT_KEYS`.
 - Produces:
-  - `@Composable fun SettingsScreen(viewModel: SettingsViewModel, initialTab: String?)`
-  - `class SettingsViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
+  - `@Composable fun SettingsScreen(document: LayoutDocument, installedApps: List<InstalledApp>, initialTab: String?, writeFailed: Boolean, onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit)` — the same shape as the tab signatures in Tasks 13 and 14, which take the document and a single `onUpdate` callback
+  - `class SettingsViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val writeFailed: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
   - `@Composable fun SliderRow(label: String, value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, onValueChange: (Float) -> Unit)`
   - `@Composable fun ChoiceRow(label: String, options: List<String>, selected: String, onSelect: (String) -> Unit)`
   - `@Composable fun ColorOptionRow(label: String, selected: ColorSpec, onSelect: (ColorSpec) -> Unit)`
@@ -5698,10 +5725,23 @@ fun SettingsScreen(
     document: LayoutDocument,
     installedApps: List<InstalledApp>,
     initialTab: String?,
+    writeFailed: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
 ) {
     val startIndex = remember(initialTab) { TAB_KEYS.indexOf(initialTab).coerceAtLeast(0) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
+
+    // A failed save must not be silent.
+    val context = LocalContext.current
+    LaunchedEffect(writeFailed) {
+        if (writeFailed) {
+            Toast.makeText(
+                context,
+                "Your changes could not be saved. Try again.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Liner Settings") }) },
@@ -5784,10 +5824,16 @@ class SettingsViewModel(
 
     val document: StateFlow<LayoutDocument> = repository.document
 
+    /** True when the last save failed — the screen shows a notice for it. */
+    val writeFailed: StateFlow<Boolean> = repository.writeFailed
+
     private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
     val installedApps: StateFlow<List<InstalledApp>> = _installedApps
 
     init {
+        // The repository reads the store once per process, so this is a no-op
+        // when the home screen has already loaded it — and it must never
+        // clobber an edit that has not been written back yet.
         viewModelScope.launch { repository.load() }
         viewModelScope.launch(Dispatchers.IO) {
             _installedApps.value = appsRepository.loadInstalledApps()
@@ -5839,11 +5885,13 @@ class SettingsActivity : ComponentActivity() {
             LinerTheme {
                 val document by viewModel.document.collectAsStateWithLifecycle()
                 val apps by viewModel.installedApps.collectAsStateWithLifecycle()
+                val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
 
                 SettingsScreen(
                     document = document,
                     installedApps = apps,
                     initialTab = intent.getStringExtra(EXTRA_TAB),
+                    writeFailed = writeFailed,
                     onUpdate = viewModel::update,
                 )
             }
