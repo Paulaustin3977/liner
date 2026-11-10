@@ -4,7 +4,11 @@ import android.graphics.Bitmap
 import android.text.format.DateFormat
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,41 +18,63 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.liner.launcher.apps.IconCache
 import dev.liner.launcher.model.ClockFormatter
+import dev.liner.launcher.model.DragTarget
 import dev.liner.launcher.model.HomeEntry
 import dev.liner.launcher.model.InstalledApp
+import dev.liner.launcher.model.ItemBounds
+import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.StyleResolver
 import dev.liner.launcher.model.ThemeTokens
+import dev.liner.launcher.model.moveItem
+import dev.liner.launcher.model.removeItem
+import dev.liner.launcher.model.removeSection
+import dev.liner.launcher.model.renameItem
+import dev.liner.launcher.model.renameSection
+import dev.liner.launcher.model.sectionById
 import dev.liner.launcher.ui.common.BackgroundLayer
+import dev.liner.launcher.ui.common.ItemEditorSheet
 import dev.liner.launcher.ui.common.LabelRow
+import dev.liner.launcher.ui.common.SectionEditorSheet
 import dev.liner.launcher.ui.common.SectionHeaderRow
 import dev.liner.launcher.ui.drawer.DrawerSheet
 import dev.liner.launcher.ui.drawer.DrawerViewModel
@@ -61,8 +87,10 @@ import java.time.ZoneId
  * The home screen: a clock, a date, and the user's apps as a list of labels.
  *
  * The screen renders the [HomeViewModel]'s state and reports every interaction
- * back to the caller — it holds no state of its own beyond the clock.
+ * back to the caller — it holds no state of its own beyond the clock and the
+ * edit mode.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel,
@@ -84,6 +112,24 @@ fun HomeScreen(
     // drag from the bottom of the screen and closed by launching an app, by
     // opening the settings, or with the back button.
     var drawerOpen by rememberSaveable { mutableStateOf(false) }
+
+    // Edit mode: a long press on a row arms a drag that reorders the list,
+    // and a long press that does not move opens the row's editor.
+    val editController = remember { EditModeController() }
+    var editingEntry by remember { mutableStateOf<HomeEntry?>(null) }
+    var editingSection by remember { mutableStateOf<Section?>(null) }
+    // The finger's position in root coordinates: the drag maths compares it
+    // with the rows' bounds, and the trash zone is hit-tested against it.
+    var dragX by remember { mutableFloatStateOf(0f) }
+    var dragY by remember { mutableFloatStateOf(0f) }
+    // Whether the finger is over the trash zone, and where that zone is.
+    var overTrash by remember { mutableStateOf(false) }
+    var trashBounds by remember { mutableStateOf<Rect?>(null) }
+    // The section order changes with the document, but the drag callback only
+    // restarts when the dragged row changes — so it reads the current order
+    // rather than a copy taken when it was built.
+    val sectionOrder by rememberUpdatedState(document.sections.map { it.id })
+
     // The drawer view model belongs to the view model store, so its filter
     // query survives a configuration change.
     val drawerViewModel: DrawerViewModel = viewModel(
@@ -92,9 +138,34 @@ fun HomeScreen(
     val visibleApps by drawerViewModel.visibleApps.collectAsStateWithLifecycle()
     val query by drawerViewModel.query.collectAsStateWithLifecycle()
 
-    // The drawer covers the whole screen, so the back button is the way out
-    // of it when the user does not want to launch anything.
+    // Edit mode is left with the back button. It is registered before the
+    // drawer's handler so that the drawer — which covers the whole screen —
+    // still takes the back button while it is open.
+    BackHandler(enabled = editController.active) { editController.exitEditMode() }
     BackHandler(enabled = drawerOpen) { drawerOpen = false }
+
+    // Commits a finished drag: the item moves to the slot the indicator
+    // showed, or it is removed when it was dropped on the trash zone.
+    fun commitDrop(itemId: String) {
+        if (overTrash) {
+            viewModel.update { doc -> doc.removeItem(itemId) }
+            editController.endDrag()
+            return
+        }
+        when (val target = editController.endDrag()) {
+            is DragTarget.InSection -> viewModel.update { doc ->
+                doc.moveItem(itemId, target.sectionId, target.index)
+            }
+            is DragTarget.PreviousSection -> viewModel.update { doc ->
+                doc.moveItem(
+                    itemId,
+                    target.sectionId,
+                    doc.sectionById(target.sectionId)?.items?.size ?: 0,
+                )
+            }
+            null -> Unit
+        }
+    }
 
     val context = LocalContext.current
 
@@ -184,6 +255,12 @@ fun HomeScreen(
                                 style = StyleResolver.resolveSectionHeaderStyle(theme),
                                 uppercase = StyleResolver.resolveSectionTitleUppercase(theme),
                                 showRule = StyleResolver.resolveSectionTitleRule(theme),
+                                // A long press on the header edits the section:
+                                // rename it, or delete it with its items.
+                                modifier = Modifier.combinedClickable(
+                                    onClick = { },
+                                    onLongClick = { editingSection = section },
+                                ),
                             )
                         }
                     }
@@ -207,6 +284,18 @@ fun HomeScreen(
                                 null
                             }
                         }
+                        // The row's top-left corner in root coordinates. A
+                        // pointer change is relative to the row, but the drag
+                        // maths and the trash zone work in root coordinates.
+                        var rowOrigin by remember(entry.item.id) {
+                            mutableStateOf(Offset.Zero)
+                        }
+                        // A row that scrolls out of the list is no longer on
+                        // screen, so its bounds must not be counted by the
+                        // drag maths.
+                        DisposableEffect(entry.item.id) {
+                            onDispose { editController.bounds.remove(entry.item.id) }
+                        }
                         LabelRow(
                             text = entry.displayLabel,
                             style = StyleResolver.resolveItemStyle(theme, entry.item.style),
@@ -219,7 +308,57 @@ fun HomeScreen(
                             enabled = entry.available || !appsLoaded,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onLaunch(entry) },
+                                .onGloballyPositioned { coordinates ->
+                                    val position = coordinates.positionInRoot()
+                                    val size = coordinates.size
+                                    rowOrigin = position
+                                    editController.bounds[entry.item.id] = ItemBounds(
+                                        id = entry.item.id,
+                                        sectionId = entry.sectionId,
+                                        top = position.y,
+                                        bottom = position.y + size.height,
+                                    )
+                                }
+                                .pointerInput(entry.item.id) {
+                                    // The long press is detected here rather
+                                    // than by a combinedClickable: the long
+                                    // press of a clickable consumes the rest
+                                    // of the pointer stream, which would
+                                    // cancel the drag it is meant to start.
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = { offset ->
+                                            editController.startDrag(entry.item.id)
+                                            dragX = rowOrigin.x + offset.x
+                                            dragY = rowOrigin.y + offset.y
+                                            overTrash = false
+                                        },
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            val finger = rowOrigin + change.position
+                                            dragX = finger.x
+                                            dragY = finger.y
+                                            overTrash = trashBounds?.contains(finger) == true
+                                            if (overTrash) {
+                                                // The item is dropped, not moved,
+                                                // so there is no slot to show.
+                                                editController.clearTarget()
+                                            } else {
+                                                editController.updateDrag(dragY, sectionOrder)
+                                            }
+                                        },
+                                        onDragEnd = { commitDrop(entry.item.id) },
+                                        onDragCancel = { editController.endDrag() },
+                                    )
+                                }
+                                .clickable {
+                                    // In edit mode a tap opens the item's
+                                    // editor instead of launching it.
+                                    if (editController.active) {
+                                        editingEntry = entry
+                                    } else {
+                                        onLaunch(entry)
+                                    }
+                                },
                         )
                     }
                 }
@@ -263,6 +402,44 @@ fun HomeScreen(
                 },
         )
 
+        // The insertion indicator: a line at the slot the dragged item would
+        // land in. It floats over the rows, so it is drawn after the list.
+        val dragTarget = editController.dragTarget
+        if (dragTarget != null) {
+            val indicatorTop = dragIndicatorTop(
+                target = dragTarget,
+                bounds = editController.bounds.values.toList(),
+                draggedId = editController.draggingId,
+            )
+            Box(
+                Modifier
+                    .offset { IntOffset(0, indicatorTop.toInt()) }
+                    .padding(horizontal = 16.dp)
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    // The theme's own text colour, so the line is visible on
+                    // a light background as well as a dark one.
+                    .background(chromeColor),
+            )
+        }
+
+        // The trash zone. It only exists in edit mode, and dropping a row on
+        // it removes that row from the home screen.
+        if (editController.active) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .height(72.dp)
+                    .onGloballyPositioned { trashBounds = it.boundsInRoot() }
+                    .background(Color(0xFFB3261E), RoundedCornerShape(16.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Drop here to remove", color = Color.White)
+            }
+        }
+
         // The drawer is drawn last, so it covers the home screen and the
         // gesture zone below it.
         if (drawerOpen) {
@@ -283,6 +460,80 @@ fun HomeScreen(
                 onDismiss = { drawerOpen = false },
             )
         }
+    }
+
+    // The editors for the item and the section. They are dialogs, so they
+    // sit on top of everything else.
+    editingEntry?.let { entry ->
+        ItemEditorSheet(
+            entry = entry,
+            sections = document.sections.map { it.id to it.title },
+            onRename = { label ->
+                viewModel.update { doc -> doc.renameItem(entry.item.id, label) }
+            },
+            onMoveToSection = { sectionId ->
+                viewModel.update { doc ->
+                    doc.moveItem(
+                        entry.item.id,
+                        sectionId,
+                        doc.sectionById(sectionId)?.items?.size ?: 0,
+                    )
+                }
+            },
+            onRemove = { viewModel.update { doc -> doc.removeItem(entry.item.id) } },
+            onDismiss = { editingEntry = null },
+        )
+    }
+
+    editingSection?.let { section ->
+        SectionEditorSheet(
+            title = section.title,
+            onRename = { title ->
+                viewModel.update { doc -> doc.renameSection(section.id, title) }
+            },
+            onDelete = { viewModel.update { doc -> doc.removeSection(section.id) } },
+            onDismiss = { editingSection = null },
+        )
+    }
+}
+
+/**
+ * The Y at which the insertion indicator is drawn for [target].
+ *
+ * The index of a [DragTarget.InSection] counts the dragged item as already
+ * removed, so the dragged row must be left out of the sibling list — counting
+ * it would put the indicator a row too low. A [DragTarget.PreviousSection]
+ * drops the item at the *end* of that section, so its indicator belongs under
+ * the section's last row rather than above its first.
+ */
+internal fun dragIndicatorTop(
+    target: DragTarget,
+    bounds: List<ItemBounds>,
+    draggedId: String?,
+): Float = when (target) {
+    is DragTarget.InSection -> {
+        val siblings = bounds
+            .filter { it.sectionId == target.sectionId && it.id != draggedId }
+            .sortedBy { it.top }
+        if (target.index < siblings.size) {
+            siblings[target.index].top
+        } else {
+            // The item lands at the end of the section: under its last row,
+            // or — when it is the section's only row — where it already is.
+            siblings.lastOrNull()?.bottom
+                ?: bounds.firstOrNull { it.id == draggedId }?.top
+                ?: 0f
+        }
+    }
+    is DragTarget.PreviousSection -> {
+        val previous = bounds
+            .filter { it.sectionId == target.sectionId }
+            .sortedBy { it.top }
+        previous.lastOrNull()?.bottom
+            // The previous section is empty, so there is no row to draw
+            // under: the indicator goes where the dragged row came from.
+            ?: bounds.firstOrNull { it.id == draggedId }?.top
+            ?: 0f
     }
 }
 
