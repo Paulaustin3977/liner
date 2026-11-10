@@ -37,6 +37,7 @@ class SettingsActivity : ComponentActivity() {
                     writeFailed = writeFailed,
                     loadFailed = loadFailed,
                     onUpdate = viewModel::update,
+                    onRefresh = viewModel::refreshApps,
                 )
             }
         }

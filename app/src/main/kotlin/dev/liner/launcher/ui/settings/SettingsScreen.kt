@@ -46,6 +46,7 @@ fun SettingsScreen(
     writeFailed: Boolean,
     loadFailed: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
+    onRefresh: () -> Unit,
 ) {
     val startIndex = remember(initialTab) { tabIndexFor(initialTab) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
@@ -123,10 +124,12 @@ fun SettingsScreen(
                         document = document,
                         installedApps = installedApps,
                         onUpdate = onUpdate,
+                        onRefresh = onRefresh,
                     )
 
                     "Sections" -> SectionsTab(
                         document = document,
+                        installedApps = installedApps,
                         onUpdate = onUpdate,
                     )
 

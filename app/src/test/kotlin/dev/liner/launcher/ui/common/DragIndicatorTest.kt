@@ -1,4 +1,4 @@
-package dev.liner.launcher.ui.home
+package dev.liner.launcher.ui.common
 
 import dev.liner.launcher.model.DragTarget
 import dev.liner.launcher.model.ItemBounds
@@ -70,7 +70,8 @@ class DragIndicatorTest {
     }
 
     @Test
-    fun `the indicator of a previous section sits under that section's last row`() {        // The item lands at the end of s1, so the line belongs under "b".
+    fun `the indicator of a previous section sits under that section's last row`() {
+        // The item lands at the end of s1, so the line belongs under "b".
         val top = dragIndicatorTop(
             target = DragTarget.PreviousSection("s1"),
             bounds = bounds,

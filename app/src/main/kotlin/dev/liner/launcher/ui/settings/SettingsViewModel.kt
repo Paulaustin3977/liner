@@ -53,6 +53,19 @@ class SettingsViewModel(
 
     fun update(transform: (LayoutDocument) -> LayoutDocument) = repository.update(transform)
 
+    /**
+     * Queries the package manager again.
+     *
+     * The query is not cheap, so it stays off the main thread — the same
+     * way the initial load does it. An app installed while the settings
+     * were open is not in the list until the user asks for it.
+     */
+    fun refreshApps() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _installedApps.value = appsRepository.loadInstalledApps()
+        }
+    }
+
     companion object {
         fun factory(repository: LayoutRepository, appsRepository: InstalledAppsRepository) =
             object : ViewModelProvider.Factory {

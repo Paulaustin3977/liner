@@ -119,6 +119,43 @@ internal fun moveSectionTargets(
 ): List<Pair<String, String?>> = sections.filter { it.first != currentSectionId }
 
 /**
+ * The chooser for the section an item is moved to.
+ *
+ * The item's own section is left out, for the same reason the item editor
+ * leaves it out: moving an item to the section it is already in would
+ * silently push it to the end of that section.
+ */
+@Composable
+fun SectionChooserSheet(
+    sections: List<Pair<String, String?>>,
+    currentSectionId: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val targets = moveSectionTargets(sections, currentSectionId)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Move to section") },
+        text = {
+            Column {
+                if (targets.isEmpty()) {
+                    Text("There is no other section to move it to.")
+                } else {
+                    targets.forEach { (id, title) ->
+                        TextButton(onClick = { onSelect(id); onDismiss() }) {
+                            Text(title ?: "Untitled")
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+/**
  * The editor for one section: rename it, or delete it — and everything in it.
  */
 @Composable

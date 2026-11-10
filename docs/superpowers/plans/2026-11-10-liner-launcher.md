@@ -4899,7 +4899,8 @@ git commit -m "feat(ui): add the app drawer with filter, grid and text modes"
 **Files:**
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/home/EditModeController.kt`
 - Test: `app/src/test/kotlin/dev/liner/launcher/ui/home/EditModeControllerTest.kt`
-- Test: `app/src/test/kotlin/dev/liner/launcher/ui/home/DragIndicatorTest.kt`
+- Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/DragIndicator.kt` (the shared insertion-indicator geometry — it is `internal`, so the settings Apps tab's reorder list needs it in a package it can reach)
+- Test: `app/src/test/kotlin/dev/liner/launcher/ui/common/DragIndicatorTest.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/EditSheets.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/ui/home/HomeScreen.kt`
 - Test: `app/src/test/kotlin/dev/liner/launcher/model/DragTargetingTest.kt` (already covers the maths)
@@ -6295,7 +6296,7 @@ fun AppsTab(
 }
 ```
 
-Repeat for the other three with the same signature shape they will keep in Tasks 13–14 (`SectionsTab(document, onUpdate)`, `ImportExportTab(document, onUpdate)`, `AdvancedTab(document, onUpdate)`). Each placeholder renders a single `Text` with its tab's name.
+Repeat for the other three with the same signature shape they will keep in Tasks 13–14 (`SectionsTab(document, installedApps, onUpdate)`, `ImportExportTab(document, onUpdate)`, `AdvancedTab(document, onUpdate)`). Each placeholder renders a single `Text` with its tab's name. The sections tab takes the installed apps because it lists the apps of a section by name.
 
 - [ ] **Step 6: Pin the settings decisions with a unit test**
 
@@ -6507,7 +6508,13 @@ git commit -m "feat(settings): add settings scaffold and the appearance tab"
 **Files:**
 - Modify: `app/src/main/kotlin/dev/liner/launcher/ui/settings/AppsTab.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/ui/settings/SectionsTab.kt`
+- Modify: `app/src/main/kotlin/dev/liner/launcher/ui/settings/SettingsScreen.kt`
+- Modify: `app/src/main/kotlin/dev/liner/launcher/ui/settings/SettingsViewModel.kt`
+- Modify: `app/src/main/kotlin/dev/liner/launcher/platform/SettingsActivity.kt`
+- Modify: `app/src/main/kotlin/dev/liner/launcher/ui/common/EditSheets.kt` (the shared section chooser)
+- Create: `app/src/main/kotlin/dev/liner/launcher/model/HomeOrder.kt`
 - Test: `app/src/test/kotlin/dev/liner/launcher/model/DocumentEditsTest.kt` (extended)
+- Test: `app/src/test/kotlin/dev/liner/launcher/model/HomeOrderTest.kt`
 
 **Interfaces:**
 - Consumes: Task 3's `addItem`, `removeItem`, `reorderHomeItems`, `addSection`, `renameSection`, `removeSection`, `moveSection`, `setHiddenFromDrawer`; Task 6's `LayoutRepository`.
