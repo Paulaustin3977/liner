@@ -7,6 +7,7 @@ import dev.liner.launcher.model.addSection
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -28,6 +29,26 @@ class LayoutRepositoryTest {
         repository.load()
 
         assertEquals(LayoutDocument(), repository.document.value)
+    }
+
+    @Test
+    fun `a corrupt payload is reported rather than silently discarded`() = runTest {
+        val repository = LayoutRepository(InMemoryDocumentStore("{not json"))
+        repository.load()
+
+        assertEquals(LayoutDocument(), repository.document.value)
+        assertTrue(repository.loadFailed.value)
+        assertEquals("{not json", repository.recoveredPayload)
+    }
+
+    @Test
+    fun `a readable payload does not report a failure`() = runTest {
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1"))))
+        val repository = LayoutRepository(InMemoryDocumentStore(stored))
+        repository.load()
+
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
     }
 
     @Test

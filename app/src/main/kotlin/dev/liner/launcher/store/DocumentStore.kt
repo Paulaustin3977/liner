@@ -7,6 +7,7 @@ interface DocumentStore {
 
 /** An in-memory [DocumentStore]. Used by tests and by the import preview flow. */
 class InMemoryDocumentStore(initial: String? = null) : DocumentStore {
+    @Volatile
     private var content: String? = initial
 
     override suspend fun read(): String? = content

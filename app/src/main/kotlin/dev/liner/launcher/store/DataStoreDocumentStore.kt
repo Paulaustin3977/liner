@@ -16,7 +16,7 @@ class DataStoreDocumentStore(context: Context) : DocumentStore {
 
     private val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-        produceFile = { context.preferencesDataStoreFile(FILE_NAME) },
+        produceFile = { context.applicationContext.preferencesDataStoreFile(FILE_NAME) },
     )
 
     override suspend fun read(): String? = dataStore.data.first()[KEY]
