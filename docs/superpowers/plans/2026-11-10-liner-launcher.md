@@ -3643,6 +3643,7 @@ git commit -m "feat(platform): add app launching, default-home detection, wallpa
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/home/{HomeScreen,HomeViewModel}.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/{LabelRow,SectionHeaderRow}.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/BackgroundLayer.kt`
+- Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/DragIndicator.kt`
 - Create: `app/src/test/kotlin/dev/liner/launcher/ui/common/GradientEndpointsTest.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/platform/LauncherActivity.kt`
 
@@ -5422,7 +5423,16 @@ editingSection?.let { section ->
 }
 ```
 
+`ui/common/DragIndicator.kt` — the shared insertion-indicator geometry. The home
+screen's drag and the settings Apps tab's reorder list both use it, so it lives
+in `ui/common` rather than in `ui/home`:
+
 ```kotlin
+package dev.liner.launcher.ui.common
+
+import dev.liner.launcher.model.DragTarget
+import dev.liner.launcher.model.ItemBounds
+
 /**
  * The Y at which the insertion indicator is drawn for [target].
  *
@@ -6753,13 +6763,93 @@ fun SectionsTab(
 }
 ```
 
-- [ ] **Step 5: Build and verify**
+- [ ] **Step 5: Add the affordances the spec asks for that the snippet above lacks**
+
+The spec's Apps tab is: *"All installed apps, searchable, each with a checkbox;
+checked = appears on home; **reorder the checked apps here (same reorder
+affordance as home)**; per-app: **hide from drawer**, **move to a specific
+section**; **refresh button** (re-queries PackageManager)"*.
+And its Sections tab is: *"Create / rename / reorder / delete sections;
+**move items between sections**; section title is optional"*.
+
+The snippet above implements the search, the checkbox, the hide-from-drawer
+toggle and the section list, but not the four marked affordances. Add them.
+
+**5.1 Reorder the checked apps.**
+
+Above the all-apps list, show a *"Home screen order"* list of the apps that
+are on the home screen, in home order, each reorderable by the same
+long-press-to-drag affordance the home screen uses — a dragged row keeps its
+slot, an insertion indicator shows where it would land, and one
+`reorderHomeItems(flatOrder)` commit happens on release.
+
+Reuse the tested primitives rather than reimplementing the maths:
+
+- `EditModeController` (`ui/home/EditModeController.kt`) for the drag state;
+- `DragTargeting.computeTarget` for the target;
+- `dragIndicatorTop(target, bounds, draggedId)` (currently in
+  `ui/home/HomeScreen.kt`) for the indicator's Y.
+
+`dragIndicatorTop` is `internal` in the `ui.home` package and the settings tab
+lives in `ui.settings`, so **move it to a package both can reach** — put it in
+`ui/common/` (with `ui/home/HomeScreen.kt` importing it from there) and update
+the plan's Task 11 step that introduced it.
+
+The commit is one call:
+
+```kotlin
+onUpdate { doc -> doc.reorderHomeItems(newFlatOrder) }
+```
+
+where `newFlatOrder` is the dragged item's id moved to the target position in
+the flat list of home item ids. `reorderHomeItems` keeps every item in its own
+section and applies the new relative order inside it.
+
+**5.2 Move an app to a specific section.**
+
+Each checked app in the all-apps list gets a *"Move to section"* control
+beside the hide-from-drawer toggle. It opens a chooser of the document's
+sections — **excluding the section the item is already in**, the same rule the
+home screen's item editor follows — and commits:
+
+```kotlin
+onUpdate { doc ->
+    doc.moveItem(itemId, sectionId, doc.sectionById(sectionId)?.items?.size ?: 0)
+}
+```
+
+**5.3 Refresh the app list.**
+
+Add a *Refresh* button next to the search field. It re-queries the package
+manager. The query lives in the view model, so:
+
+- `SettingsViewModel` gains `fun refreshApps()` that re-runs the query off the
+  main thread (the same way `init` does);
+- `SettingsScreen` gains an `onRefresh: () -> Unit` parameter and passes it
+  to `AppsTab`;
+- `SettingsActivity` passes `viewModel::refreshApps`.
+
+**5.4 Move items between sections.**
+
+In the Sections tab, each section row expands to list its items. Each item has
+a *"Move to"* control that opens the same section chooser as 5.2 and commits
+the same `moveItem` call. A section with no items shows a short "No apps"
+line instead of an empty list.
+
+**5.5 Rename a section.**
+
+Tapping a section row opens the existing `SectionEditorSheet`
+(`ui/common/EditSheets.kt`), which renames the section and — with the
+confirmation Task 11 added — asks before deleting it and its items. Use it
+rather than a second editor.
+
+- [ ] **Step 6: Build and verify**
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add app/src/main/kotlin/dev/liner/launcher/ui/settings app/src/test/kotlin/dev/liner/launcher/model
