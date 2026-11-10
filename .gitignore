@@ -3,9 +3,13 @@
 build/
 .gradle/
 .gradle-home/
+.kotlin/
 *.apk
 *.keystore
 *.jks
 local.properties
 keystore.properties
 .superpowers/
+
+# The delivery: the built APKs and the source zip. Built, never committed.
+dist/

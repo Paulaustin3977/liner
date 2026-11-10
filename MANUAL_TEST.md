@@ -55,6 +55,18 @@ Say so in the report. "Skipped" is a legitimate result; "not run" is not.
 - [ ] **1.4** Tap "Choose apps".
       **Expected:** Liner Settings opens on the **Apps** tab (the tab row at
       the top shows "Apps" as the selected tab).
+- [ ] **1.5** Look under the clock.
+      **Expected:** a card reads "Set Liner as your home app", with the line
+      "Liner is not your default launcher yet. Choose it to use it as your
+      home screen." and two buttons: **"Set as default"** and **"Not now"**.
+      If Liner is *already* the default home app the card is absent — that
+      is also correct.
+- [ ] **1.6** Tap **"Not now"**.
+      **Expected:** the card disappears, and the home screen is unchanged
+      otherwise.
+- [ ] **1.7** Close Liner and open it again.
+      **Expected:** the card does **not** come back. It is a one-time prompt,
+      and the dismissal is remembered in the layout document.
 
 ---
 
@@ -80,6 +92,18 @@ Say so in the report. "Skipped" is a legitimate result; "not run" is not.
       and then press BACK.
       **Expected:** you come back to Liner's home screen, with your layout
       intact.
+- [ ] **2.6** Clear Liner's data — Settings → Apps → Liner → Storage → Clear
+      data — and open Liner again.
+      **Expected:** the first-run card under the clock is back, because
+      clearing the data cleared the layout document, which is where the
+      dismissal is recorded.
+- [ ] **2.7** Tap **"Set as default"** on that card.
+      **Expected:** the same system flow as 2.2 — the default-home dialog on
+      Android 10 and newer, the home-app chooser on Android 9 and older.
+      Choose Liner and confirm.
+- [ ] **2.8** Come back to Liner.
+      **Expected:** the card is gone. The prompt does not come back once
+      Liner *is* the default home app, whether or not it was dismissed.
 
 ---
 
@@ -540,7 +564,7 @@ Also report, even if every step passed:
   shipped unverified — no emulator was available when Liner was built — so
   running them on a device is a good companion to this script:
   ```
-  gradle :app:connectedDebugAndroidTest
+  ./gradlew :app:connectedDebugAndroidTest
   ```
 - Fonts other than the four Liner offers, and the exact rendering of every
   background style on every wallpaper.

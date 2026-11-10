@@ -28,11 +28,17 @@ android {
 
     signingConfigs {
         if (keystorePropsFile.exists()) {
+            // A keystore.properties that is missing a key used to fail with
+            // an opaque configuration-time NPE, so every key is read through
+            // a check that says which one is missing.
+            fun required(key: String): String = keystoreProps.getProperty(key)
+                ?: error("keystore.properties is missing '$key'")
+
             create("release") {
-                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
-                storePassword = keystoreProps.getProperty("storePassword")
-                keyAlias = keystoreProps.getProperty("keyAlias")
-                keyPassword = keystoreProps.getProperty("keyPassword")
+                storeFile = rootProject.file(required("storeFile"))
+                storePassword = required("storePassword")
+                keyAlias = required("keyAlias")
+                keyPassword = required("keyPassword")
             }
         }
     }
