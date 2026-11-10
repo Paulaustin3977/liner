@@ -2289,7 +2289,7 @@ git commit -m "feat(store): add document store, repository and DataStore adapter
 - Consumes: Task 2's `InstalledApp`, Task 4's `AppCatalog`.
 - Produces:
   - `class InstalledAppsRepository(context: Context)` with `fun loadInstalledApps(): List<InstalledApp>`
-  - `class IconCache(packageManager: PackageManager, sizePx: Int)` with `fun icon(packageName: String, activityClass: String): ImageBitmap?`
+  - `class IconCache(packageManager: PackageManager, sizePx: Int)` with `fun icon(packageName: String): ImageBitmap?`
   - `class AppContainer(context: Context)` with `val repository: LayoutRepository`, `val appsRepository: InstalledAppsRepository`, `val iconCache: IconCache`
   - `class LinerApp : Application` with `val container: AppContainer`
 
@@ -2422,14 +2422,12 @@ class IconCache(
 ) {
     private val cache = LruCache<String, ImageBitmap>(64)
 
-    fun icon(packageName: String, activityClass: String): ImageBitmap? {
-        val key = "$packageName/$activityClass@$sizePx"
+    fun icon(packageName: String): ImageBitmap? {
+        val key = "$packageName@$sizePx"
         cache.get(key)?.let { return it }
 
         val bitmap = try {
-            val component = android.content.ComponentName(packageName, activityClass)
-            val drawable: Drawable = packageManager.getActivityIcon(component)
-            drawable.toImageBitmap()
+            packageManager.getApplicationIcon(packageName).toImageBitmap()
         } catch (_: Throwable) {
             null
         }
@@ -3152,6 +3150,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.liner.launcher.apps.IconCache
 import dev.liner.launcher.model.ClockFormatter
 import dev.liner.launcher.model.HomeEntry
 import dev.liner.launcher.model.StyleResolver
@@ -3165,6 +3164,7 @@ import java.time.ZoneId
 fun HomeScreen(
     viewModel: HomeViewModel,
     wallpaper: Drawable?,
+    iconCache: IconCache,
     onLaunch: (HomeEntry) -> Unit,
     onOpenSettings: (String?) -> Unit,
 ) {
@@ -3212,11 +3212,19 @@ fun HomeScreen(
                         items = entries.filter { it.sectionId == section.id },
                         key = { it.item.id },
                     ) { entry ->
+                        // Icons are opt-in: the home screen is icon-free by default.
+                        val icon = if (theme.showIcons) {
+                            remember(entry.item.id) {
+                                iconCache.icon(entry.item.packageName)
+                            }
+                        } else {
+                            null
+                        }
                         LabelRow(
                             text = entry.displayLabel,
                             style = StyleResolver.resolveItemStyle(theme, entry.item.style),
                             alignment = horizontalAlignment,
-                            icon = null,
+                            icon = icon,
                             iconSizeDp = theme.iconSizeDp,
                             enabled = entry.available,
                             modifier = Modifier
@@ -3293,6 +3301,7 @@ class LauncherActivity : ComponentActivity() {
                 HomeScreen(
                     viewModel = viewModel,
                     wallpaper = wallpaper,
+                    iconCache = container.iconCache,
                     onLaunch = { entry -> launchEntry(entry.packageName) },
                     onOpenSettings = { tab -> openSettings(tab) },
                 )
@@ -3541,7 +3550,7 @@ fun DrawerSheet(
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
                             val icon = remember(app.packageName, app.activityClass) {
-                                iconCache.icon(app.packageName, app.activityClass)
+                                iconCache.icon(app.packageName)
                             }
                             if (icon != null) {
                                 Image(
@@ -3635,9 +3644,10 @@ Add a gesture zone at the bottom of the screen:
 Import `androidx.compose.foundation.gestures.detectVerticalDragGestures` and
 `androidx.compose.ui.input.pointer.pointerInput`.
 
-Change `HomeScreen`'s signature to also take `iconCache: IconCache` and
-`onLaunchApp: (InstalledApp) -> Unit`; keep `onLaunch: (HomeEntry) -> Unit` for
-the home rows.
+`HomeScreen` already takes `iconCache: IconCache` (added in Task 9, where the
+home rows resolve their own icons when `theme.showIcons` is on). Task 10 only
+adds `onLaunchApp: (InstalledApp) -> Unit` for the drawer; `onLaunch:
+(HomeEntry) -> Unit` stays for the home rows.
 
 - [ ] **Step 6: Update the activity**
 
@@ -5389,7 +5399,7 @@ class DrawerTest {
         val cache = dev.liner.launcher.apps.IconCache(context.packageManager, 96)
 
         // Must not throw, whatever the icons look like.
-        installed.forEach { cache.icon(it.packageName, it.activityClass) }
+        installed.forEach { cache.icon(it.packageName) }
     }
 }
 ```
