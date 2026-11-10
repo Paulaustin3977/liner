@@ -1984,7 +1984,7 @@ class DragTargetingTest {
     fun `dragging above the first item of a section targets index zero`() {
         val target = DragTargeting.computeTarget(95f, bounds, "a", sectionOrder)
 
-        assertEquals(DragTargetTarget.InSection("s1", 0), target)
+        assertEquals(DragTarget.InSection("s1", 0), target)
     }
 
     @Test
@@ -2020,6 +2020,13 @@ class DragTargetingTest {
 
 > The sealed type produced by `computeTarget` is named `DragTarget`. Use that name
 > consistently in the test file above.
+>
+> The implementation above is the corrected version. The first draft measured
+> "above the first item" against the *siblings* only, which left a single-item
+> section with no first item to compare against — a drag could never escape
+> upwards — and it used a strict `>` for the midpoint test, so a drop exactly
+> on an item's midpoint landed above it. Both were caught by this task's own
+> tests.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -2069,16 +2076,21 @@ object DragTargeting {
         val sectionIndex = sectionOrder.indexOf(dragged.sectionId)
         val previousSectionId = if (sectionIndex > 0) sectionOrder[sectionIndex - 1] else null
 
-        val siblings = bounds.filter { it.sectionId == dragged.sectionId && it.id != draggedId }
+        val sectionItems = bounds.filter { it.sectionId == dragged.sectionId }
+        val siblings = sectionItems.filter { it.id != draggedId }
 
-        val firstTop = siblings.minOfOrNull { it.top }
+        // The section's first item counts even when it is the dragged item
+        // itself: dragging a section's top item above its own top edge means
+        // moving it into the section above.
+        val firstTop = sectionItems.minOfOrNull { it.top }
         if (firstTop != null && dragY < firstTop && previousSectionId != null) {
             return DragTarget.PreviousSection(previousSectionId)
         }
 
         var index = 0
         for (bound in siblings) {
-            if (dragY > (bound.top + bound.bottom) / 2f) index++ else break
+            // Landing on the midpoint counts as past it, so the item goes below.
+            if (dragY >= (bound.top + bound.bottom) / 2f) index++ else break
         }
 
         return DragTarget.InSection(dragged.sectionId, index)

@@ -218,7 +218,7 @@ free of nondeterministic generation and therefore deterministic under test.
 `model` also exposes `resolveItemStyle(theme, itemStyle)` and
 `resolveSectionHeaderStyle(theme)`. Each returns a plain `ResolvedStyle`
 data class whose fields are framework-free — `fontKey: String`,
-`sizeSp: Float`, `weight: Int`, `letterSpacingEm: Float`, `colorArgb: Int` —
+`sizeSp: Float`, `weight: Int`, `letterSpacingEm: Float`, `colorArgb: Int?` —
 which the `ui` layer maps onto Compose `TextStyle` and `Color`. `model` stays
 free of Compose types, so the dependency rule in §4.3 holds.
 
