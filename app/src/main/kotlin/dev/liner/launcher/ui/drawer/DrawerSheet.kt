@@ -57,6 +57,9 @@ import kotlinx.coroutines.withContext
  * wallpaper or a bright gradient. [appsLoaded] tells the sheet whether the app
  * query has answered yet: an empty list before that means "not loaded", not
  * "no apps match".
+ *
+ * [textColor] is the theme's resolved text colour, so the labels follow the
+ * theme the user picked rather than the Material 3 default.
  */
 @Composable
 fun DrawerSheet(
@@ -67,6 +70,7 @@ fun DrawerSheet(
     background: BackgroundSpec,
     wallpaper: Bitmap?,
     appsLoaded: Boolean,
+    textColor: Color,
     systemTextColor: Color,
     systemBackgroundColor: Color,
     onQueryChange: (String) -> Unit,
@@ -88,10 +92,13 @@ fun DrawerSheet(
             systemTextColor = systemTextColor,
             systemBackgroundColor = systemBackgroundColor,
         )
+        // The scrim leans towards the theme's background colour, not always
+        // towards black: a black scrim over a wallpaper would leave near-black
+        // text unreadable in the light theme.
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.45f)),
+                .background(systemBackgroundColor.copy(alpha = 0.45f)),
         )
 
         Column(
@@ -118,7 +125,7 @@ fun DrawerSheet(
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {}
                 } else if (visibleApps.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No apps match", fontSize = 16.sp)
+                        Text("No apps match", fontSize = 16.sp, color = textColor)
                     }
                 } else if (style == "text") {
                     LazyColumn {
@@ -129,7 +136,7 @@ fun DrawerSheet(
                                     .clickable { onLaunch(app) }
                                     .padding(vertical = 12.dp),
                             ) {
-                                Text(app.systemLabel, fontSize = 18.sp)
+                                Text(app.systemLabel, fontSize = 18.sp, color = textColor)
                             }
                         }
                     }
@@ -171,6 +178,7 @@ fun DrawerSheet(
                                     Text(
                                         text = app.systemLabel,
                                         fontSize = 12.sp,
+                                        color = textColor,
                                         textAlign = TextAlign.Center,
                                         maxLines = 1,
                                         modifier = Modifier.padding(top = 4.dp),

@@ -274,6 +274,7 @@ fun HomeScreen(
                 background = theme.background,
                 wallpaper = wallpaper,
                 appsLoaded = appsLoaded,
+                textColor = chromeColor,
                 systemTextColor = systemTextColor,
                 systemBackgroundColor = systemBackgroundColor,
                 onQueryChange = drawerViewModel::setQuery,
