@@ -6785,32 +6785,48 @@ toggle and the section list, but not the four marked affordances. Add them.
 **5.1 Reorder the checked apps.**
 
 Above the all-apps list, show a *"Home screen order"* list of the apps that
-are on the home screen, in home order, each reorderable by the same
-long-press-to-drag affordance the home screen uses — a dragged row keeps its
-slot, an insertion indicator shows where it would land, and one
-`reorderHomeItems(flatOrder)` commit happens on release.
+are on the home screen, **grouped by section exactly as the home screen shows
+them**, each reorderable by the same long-press-to-drag affordance the home
+screen uses — a dragged row keeps its slot, an insertion indicator shows where
+it would land, and one commit happens on release.
+
+The spec asks for the *same reorder affordance as home*, and on the home
+screen a drag may cross a section boundary: dropping an item into another
+section moves it there. So the list is grouped by section, the drop target is
+resolved by `DragTargeting.computeTarget` — exactly as on the home screen —
+and the commit is the same `moveItem` call the home screen makes:
+
+```kotlin
+when (val target = editController.endDrag()) {
+    is DragTarget.InSection -> onUpdate { doc ->
+        doc.moveItem(itemId, target.sectionId, target.index)
+    }
+    is DragTarget.PreviousSection -> onUpdate { doc ->
+        doc.moveItem(
+            itemId,
+            target.sectionId,
+            doc.sectionById(target.sectionId)?.items?.size ?: 0,
+        )
+    }
+    null -> Unit
+}
+```
 
 Reuse the tested primitives rather than reimplementing the maths:
 
 - `EditModeController` (`ui/home/EditModeController.kt`) for the drag state;
 - `DragTargeting.computeTarget` for the target;
-- `dragIndicatorTop(target, bounds, draggedId)` (currently in
-  `ui/home/HomeScreen.kt`) for the indicator's Y.
+- `dragIndicatorTop(target, bounds, draggedId)` for the indicator's Y.
 
 `dragIndicatorTop` is `internal` in the `ui.home` package and the settings tab
 lives in `ui.settings`, so **move it to a package both can reach** — put it in
 `ui/common/` (with `ui/home/HomeScreen.kt` importing it from there) and update
 the plan's Task 11 step that introduced it.
 
-The commit is one call:
-
-```kotlin
-onUpdate { doc -> doc.reorderHomeItems(newFlatOrder) }
-```
-
-where `newFlatOrder` is the dragged item's id moved to the target position in
-the flat list of home item ids. `reorderHomeItems` keeps every item in its own
-section and applies the new relative order inside it.
+`LayoutDocument.reorderHomeItems(flatOrder)` stays in the model — it is a
+tested operation — but it is **not** the commit this list makes: it keeps
+every item in its own section, so a drag across a section boundary would
+silently do nothing.
 
 **5.2 Move an app to a specific section.**
 
