@@ -122,8 +122,13 @@ before Liner takes over somebody's home screen.
   they are shipped unverified. Nothing in this release should be read as
   "tested on a device".
 - The launcher's own behaviour on a real device — gestures, the drawer, the
-  drag-to-reorder, the first-run prompt — is covered only by
-  `MANUAL_TEST.md`, which is a script for a human to run.
+  drag-to-reorder, the first-run prompt — is verified only by
+  `MANUAL_TEST.md`, which is a script for a human to run. The instrumentation
+  sources cover the drag gesture and the drawer swipe as well, but they have
+  never run, so they are not a second opinion.
+- Icon rendering uses `loadIcon` and rasterises to a bitmap; adaptive icons
+  are rendered by the system, so their appearance may differ slightly
+  between OEM implementations.
 - The release APK is signed with the throwaway demo keystore described
   above. It is fine for a demo; it is not fine for a real release.
 - Liner keeps no hidden state: everything you can see is in the layout

@@ -433,7 +433,7 @@ instance state, which is what keeps cold starts fast.
 | DataStore write failure | Continue on in-memory state; retry the write on the next edit; surface a non-blocking notice. |
 | `PackageManager` query throws | Fall back to the last successful cached app list. |
 | Icon load failure | Render the label with a neutral placeholder. Never crash. |
-| Process killed mid-edit | Every edit is persisted immediately; restart restores the last committed state. |
+| Process killed mid-edit | Edits are persisted shortly after the last one (writes are coalesced, so the last edit can be lost if the process is killed within ~100 ms of it); restart restores the last committed state. |
 | Another launcher set as default | Settings shows a banner and a "Set as default" action. |
 | Filter matches nothing in drawer | Explicit "No apps match" row, not an empty void. |
 | Section becomes empty | Kept as an untitled group unless the user deletes it. Empty sections are not auto-removed. |
@@ -463,13 +463,27 @@ These run headless via `gradle test` and are verified before delivery.
 
 ### 10.2 Instrumentation tests — written, NOT verified here
 
-`app/src/androidTest/` covers: drag-to-reorder gesture, drawer opening by
-swipe, default-home intent resolution, icon rendering.
+`app/src/androidTest/` covers, as source:
+
+- the launcher's HOME registration, the installed-app query, the document
+  round trip and the repository's persistence (`HomeScreenTest`)
+- the drawer's app list, its filter and icon loading (`DrawerTest`)
+- the default-home role query and the request that offers the role
+  (`DefaultHomeTest`)
+- the drag-to-reorder gesture and the drawer opening by swipe, driven
+  through the real `HomeScreen` with Compose UI tests (`HomeInteractionTest`)
 
 **No emulator or device is available in the build environment, so these are
 shipped unverified.** They are included as source and are expected to be run
 on a device by the user. This limitation is stated plainly rather than
 implied to pass.
+
+What the suite does **not** reach stays manual: how the gestures feel on a
+real device, the drag's insertion indicator and its drop on the trash zone,
+the first-run prompt, the set-as-default flow, the theming, the
+import/export round trip and the process-death recovery. Those are the
+steps of `MANUAL_TEST.md`, which is the only end-to-end verification of
+Liner that exists.
 
 ### 10.3 Manual test script
 
