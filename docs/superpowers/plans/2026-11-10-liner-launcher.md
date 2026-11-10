@@ -44,9 +44,11 @@ Every task below implicitly includes these. Values are copied verbatim from the 
   clock size) is read from `ThemeTokens` directly and is not a style decision.
 - **Only `material-icons-core` is available** — not `material-icons-extended`. The full extended set adds ~37 MB to the APK for icons this app never uses. Use a core icon (`Icons.Default.Settings` is in core) or a text label instead.
 - No crashes on: missing app, failed icon load, failed DataStore write, corrupt JSON, `PackageManager` throwing.
-- **Removing an item from the home screen is always undoable.** The trash
-  zone, the item editor's Remove button and any other removal path raise a
-  snackbar with an Undo action that puts the item back where it was.
+- **Removing a single item from the home screen is always undoable.** The
+  trash zone and the item editor's Remove button raise a snackbar with an
+  Undo action that puts the item back where it was. Deleting a *section*
+  removes its items too and cannot be undone, so it asks for confirmation
+  first.
 - **Icons are never rasterised on the main thread.** `IconCache` is thread-safe
   (`LruCache` plus a concurrent set), so both the drawer and the home screen
   load icons from a background dispatcher and publish the result into Compose
@@ -5036,6 +5038,7 @@ Then in `onDrag`:
 
 ```kotlin
 val overTrash = trashBounds?.contains(Offset(dragX, dragY)) == true
+// (the finger's full position — the X is not tracked separately)
 if (overTrash) {
     editController.clearTarget()
 } else {
@@ -5062,7 +5065,8 @@ if (overTrash) {
 }
 ```
 
-`dragX` is tracked alongside `dragY`, updated in `onDrag` as `dragX += dragAmount.x`.
+The trash zone is hit-tested with the finger's full position, so the X does
+not need to be tracked on its own.
 
 8. Render the insertion indicator. A 2dp line that sits at the slot the item
    would land in:
