@@ -20,7 +20,7 @@ class DragTargetingTest {
     }
 
     @Test
-    fun `dragging above the first item of a section targets index zero`() {
+    fun `dragging above the first item of the first section targets index zero`() {
         val target = DragTargeting.computeTarget(95f, bounds, "a", sectionOrder)
 
         assertEquals(DragTarget.InSection("s1", 0), target)
@@ -35,7 +35,18 @@ class DragTargetingTest {
 
     @Test
     fun `the dragged item is excluded from the index computation`() {
-        // "b" is being dragged; "a" and "c" are the only other items.
+        // At y=170 — the midpoint of "b" — the answer is index 1 within the
+        // remaining sibling list [a]. Counting "b" as its own sibling would
+        // give index 2, which no longer exists in a two-item section.
+        val target = DragTargeting.computeTarget(170f, bounds, "b", sectionOrder)
+
+        assertEquals(DragTarget.InSection("s1", 1), target)
+    }
+
+    @Test
+    fun `a drop exactly on an item's midpoint lands below it`() {
+        // At y=120 — exactly the midpoint of "a" — the item goes after "a",
+        // not before it.
         val target = DragTargeting.computeTarget(120f, bounds, "b", sectionOrder)
 
         assertEquals(DragTarget.InSection("s1", 1), target)

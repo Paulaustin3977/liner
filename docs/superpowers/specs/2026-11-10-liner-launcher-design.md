@@ -257,7 +257,7 @@ Interactions:
 | Tap item (app uninstalled) | Toast "App not installed" |
 | Long-press item | Enter edit mode for that item |
 | Long-press (edit mode) | Drag to reorder within its section |
-| Drag item to top edge (edit mode) | Move into the section immediately above it in document order; if it is already in the first section, it moves to the end of that section |
+| Drag item to top edge (edit mode) | Move into the section immediately above it in document order; if it is already in the first section, it moves to the **top** of that section, since there is no section above to move into |
 | Drag item to trash zone (edit mode) | Remove from home (undoable via Snackbar) |
 | Tap item (edit mode) | Open rename sheet |
 | Long-press section header | Sheet: rename section / delete section |
