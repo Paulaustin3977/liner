@@ -1,4 +1,6 @@
 .toolchain/
+.toolchain_setup.sh
+.toolchain_setup.log
 .plugin-cache/
 build/
 .gradle/
