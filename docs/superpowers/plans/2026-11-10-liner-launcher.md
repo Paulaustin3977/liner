@@ -2197,7 +2197,7 @@ git commit -m "feat(model): add pure drag-target computation"
   - `interface DocumentStore { suspend fun read(): String?; suspend fun write(json: String) }`
   - `class InMemoryDocumentStore(initial: String? = null) : DocumentStore` (test double, lives in main so the instrumentation tests can use it too)
   - `class DataStoreDocumentStore(context: Context) : DocumentStore`
-  - `class LayoutRepository(store: DocumentStore)` with `val document: StateFlow<LayoutDocument>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `var recoveredPayload: String?` (private setter), `suspend fun load()` (reads the store once per process), `fun update(transform: (LayoutDocument) -> LayoutDocument)`
+  - `class LayoutRepository(store: DocumentStore)` with `val document: StateFlow<LayoutDocument>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `var recoveredPayload: String?` (private setter), `suspend fun load()` (reads the store once per process), `internal suspend fun reload()` (test hook: re-reads the store), `fun update(transform: (LayoutDocument) -> LayoutDocument)`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2210,6 +2210,7 @@ import dev.liner.launcher.model.DocumentCodec
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.addSection
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -2338,6 +2339,72 @@ class LayoutRepositoryTest {
         assertEquals(listOf("s1", "s2"), repository.document.value.sections.map { it.id })
         assertTrue(store.read()!!.contains("s2"))
     }
+
+    @Test
+    fun `a later successful load clears an earlier failure`() = runTest {
+        val store = InMemoryDocumentStore("{not json")
+        val repository = LayoutRepository(store)
+        repository.load()
+        assertTrue(repository.loadFailed.value)
+        assertEquals("{not json", repository.recoveredPayload)
+
+        store.write(DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1")))))
+        repository.reload()
+
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
+    }
+
+    @Test
+    fun `an empty store clears a failure from an earlier failed read`() = runTest {
+        val store = object : DocumentStore {
+            var failRead = true
+            override suspend fun read(): String? {
+                if (failRead) { failRead = false; throw IllegalStateException("disk unreadable") }
+                return null
+            }
+            override suspend fun write(json: String) = Unit
+        }
+        val repository = LayoutRepository(store)
+
+        repository.load()
+        assertTrue(repository.loadFailed.value)
+
+        repository.reload()
+
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
+    }
+
+    @Test
+    fun `a second load does not discard an edit that has not been written back yet`() = runTest {
+        // The write is held back, so the store keeps the pre-edit document
+        // for as long as the test needs it to.
+        val gate = CompletableDeferred<Unit>()
+        val stored = DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s0"))))
+        val store = object : DocumentStore {
+            var content: String? = stored
+            override suspend fun read(): String? = content
+            override suspend fun write(json: String) {
+                gate.await()
+                content = json
+            }
+        }
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        // The edit is applied in memory and queued for the writer, but the
+        // write has not landed yet.
+        repository.update { it.addSection("s1", "One") }
+
+        // A second read of the store would replace the in-memory document
+        // with the pre-edit one and throw the edit away.
+        repository.load()
+
+        assertEquals(listOf("s0", "s1"), repository.document.value.sections.map { it.id })
+
+        gate.complete(Unit)
+    }
 }
 ```
 
@@ -2346,6 +2413,12 @@ class LayoutRepositoryTest {
 > single coroutine, awaiting the latest write also implies every earlier
 > write has completed. Add it to `LayoutRepository` as
 > `internal suspend fun awaitPendingWrite()`.
+>
+> `reload()` is a test-visible suspend function that re-reads the store,
+> ignoring the once-per-process guard on `load()`. A test that needs a
+> *second* read — the ones that clear an earlier read failure — calls it
+> instead of `load()`. Add it to `LayoutRepository` as
+> `internal suspend fun reload()`.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -5296,6 +5369,7 @@ git commit -m "feat(ui): add edit mode with drag reorder, rename and remove"
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/settings/{SettingsScreen,AppearanceTab}.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/{SliderRow,ChoiceRow,ColorOptionRow}.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/platform/SettingsActivity.kt`
+- Test: `app/src/test/kotlin/dev/liner/launcher/ui/settings/SettingsAppearanceTest.kt`
 
 **Interfaces:**
 - Consumes: Task 3's `updateTheme`, Task 8's `FONT_KEYS`.
@@ -5305,6 +5379,14 @@ git commit -m "feat(ui): add edit mode with drag reorder, rename and remove"
   - `@Composable fun SliderRow(label: String, value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, onValueChange: (Float) -> Unit)`
   - `@Composable fun ChoiceRow(label: String, options: List<String>, selected: String, onSelect: (String) -> Unit)`
   - `@Composable fun ColorOptionRow(label: String, selected: ColorSpec, onSelect: (ColorSpec) -> Unit)`
+  - The decisions behind those rows are plain `internal` functions, so a unit
+    test can pin them — the project's unit-test source set has no Compose UI
+    test dependency and there is no emulator:
+    - `internal fun tabIndexFor(key: String?): Int` — the tab a settings key opens
+    - `internal fun backgroundStyleLabel(background: BackgroundSpec): String` — the name of a background style
+    - `internal fun applyBackgroundStyle(theme: ThemeTokens, style: String): ThemeTokens` — the theme after a style is picked
+    - `internal fun formatSliderValue(value: Float): String` — how a slider value is written out
+    - `internal fun isPaletteColorSelected(selected: ColorSpec, argb: Int): Boolean` — whether a swatch is the picked colour
 
 - [ ] **Step 1: Implement the shared settings rows**
 
@@ -5319,8 +5401,13 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 
+/**
+ * A labelled slider.
+ *
+ * The label carries the current value, so the user reads the number as well
+ * as the position of the handle.
+ */
 @Composable
 fun SliderRow(
     label: String,
@@ -5330,8 +5417,10 @@ fun SliderRow(
     onValueChange: (Float) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth()) {
-        Text("$label: ${formatValue(value)}")
+        Text("$label: ${formatSliderValue(value)}")
         Slider(
+            // A value outside the range would make the slider misbehave, so
+            // the handle is clamped even though the stored token is not.
             value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onValueChange,
             valueRange = range,
@@ -5340,7 +5429,11 @@ fun SliderRow(
     }
 }
 
-private fun formatValue(value: Float): String =
+/**
+ * The value as the user reads it: whole numbers without a decimal part,
+ * everything else with two decimals.
+ */
+internal fun formatSliderValue(value: Float): String =
     if (value % 1f == 0f) value.toInt().toString() else String.format("%.2f", value)
 ```
 
@@ -5350,6 +5443,7 @@ private fun formatValue(value: Float): String =
 package dev.liner.launcher.ui.common
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.FilterChip
@@ -5358,6 +5452,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
+/**
+ * A labelled group of mutually exclusive choices.
+ *
+ * The chips wrap onto the next line when they do not fit, so a long list of
+ * options stays readable on a narrow screen.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChoiceRow(
     label: String,
@@ -5393,9 +5494,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -5403,13 +5506,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import dev.liner.launcher.model.ColorSpec
 
+/** The colours the user can pick from. */
 private val PALETTE = listOf(
     0xFF000000.toInt(), 0xFFFFFFFF.toInt(), 0xFF888888.toInt(), 0xFFCCCCCC.toInt(),
     0xFFE53935.toInt(), 0xFFFB8C00.toInt(), 0xFFFDD835.toInt(), 0xFF43A047.toInt(),
     0xFF1E88E5.toInt(), 0xFF8E24AA.toInt(), 0xFF00ACC1.toInt(), 0xFF6D4C41.toInt(),
 )
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+/**
+ * A labelled group of colour choices: the palette's swatches plus a chip
+ * that follows the system's own colour.
+ *
+ * The selected swatch is drawn with a thicker border, so the choice is
+ * visible without relying on colour alone.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ColorOptionRow(
     label: String,
@@ -5427,26 +5538,23 @@ fun ColorOptionRow(
                     .size(32.dp)
                     .background(Color(argb))
                     .border(
-                        width = if (selected is ColorSpec.Solid && selected.argb == argb) 3.dp else 1.dp,
+                        width = if (isPaletteColorSelected(selected, argb)) 3.dp else 1.dp,
                         color = Color.White,
                     )
                     .clickable { onSelect(ColorSpec.Solid(argb)) },
             )
         }
-        FilterChipText("Follow system", selected is ColorSpec.FollowSystem) {
-            onSelect(ColorSpec.FollowSystem)
-        }
+        FilterChip(
+            selected = selected is ColorSpec.FollowSystem,
+            onClick = { onSelect(ColorSpec.FollowSystem) },
+            label = { Text("Follow system") },
+        )
     }
 }
 
-@Composable
-private fun FilterChipText(label: String, selected: Boolean, onClick: () -> Unit) {
-    androidx.compose.material3.FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label) },
-    )
-}
+/** Whether [argb] is the colour the user picked. */
+internal fun isPaletteColorSelected(selected: ColorSpec, argb: Int): Boolean =
+    selected is ColorSpec.Solid && selected.argb == argb
 ```
 
 - [ ] **Step 2: Implement the appearance tab**
@@ -5461,6 +5569,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -5472,6 +5581,13 @@ import dev.liner.launcher.ui.common.ChoiceRow
 import dev.liner.launcher.ui.common.ColorOptionRow
 import dev.liner.launcher.ui.common.SliderRow
 
+/**
+ * The appearance tab: every theme token the user can change.
+ *
+ * The tab writes the tokens straight into the document through
+ * [onThemeChange]; it never reads a resolved style back, because a settings
+ * screen is where the tokens are *set*, not interpreted.
+ */
 @Composable
 fun AppearanceTab(
     theme: ThemeTokens,
@@ -5482,24 +5598,9 @@ fun AppearanceTab(
         ChoiceRow(
             label = "Style",
             options = listOf("solid", "gradient", "wallpaper"),
-            selected = when (theme.background) {
-                is BackgroundSpec.Solid -> "solid"
-                is BackgroundSpec.Gradient -> "gradient"
-                is BackgroundSpec.Wallpaper -> "wallpaper"
-            },
+            selected = backgroundStyleLabel(theme.background),
             onSelect = { style ->
-                onThemeChange { current ->
-                    when (style) {
-                        "solid" -> current.copy(background = BackgroundSpec.Solid(ColorSpec.Solid(0xFF101014.toInt())))
-                        "gradient" -> current.copy(
-                            background = BackgroundSpec.Gradient(
-                                from = ColorSpec.Solid(0xFF101014.toInt()),
-                                to = ColorSpec.Solid(0xFF2A2A32.toInt()),
-                            ),
-                        )
-                        else -> current.copy(background = BackgroundSpec.Wallpaper(0.35f))
-                    }
-                }
+                onThemeChange { current -> applyBackgroundStyle(current, style) }
             },
         )
 
@@ -5676,13 +5777,38 @@ fun AppearanceTab(
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
-        androidx.compose.material3.TextButton(
+        TextButton(
             onClick = { onThemeChange { ThemeTokens() } },
             modifier = Modifier.padding(bottom = 24.dp),
         ) {
             Text("Reset appearance")
         }
     }
+}
+
+/** The name of the background style, as the style chips spell it. */
+internal fun backgroundStyleLabel(background: BackgroundSpec): String = when (background) {
+    is BackgroundSpec.Solid -> "solid"
+    is BackgroundSpec.Gradient -> "gradient"
+    is BackgroundSpec.Wallpaper -> "wallpaper"
+}
+
+/**
+ * The theme after the user picks a background style.
+ *
+ * Each style comes with its own starting colours, so picking one shows a
+ * background the user can then adjust. An unknown style falls back to the
+ * wallpaper rather than leaving the theme without a background.
+ */
+internal fun applyBackgroundStyle(theme: ThemeTokens, style: String): ThemeTokens = when (style) {
+    "solid" -> theme.copy(background = BackgroundSpec.Solid(ColorSpec.Solid(0xFF101014.toInt())))
+    "gradient" -> theme.copy(
+        background = BackgroundSpec.Gradient(
+            from = ColorSpec.Solid(0xFF101014.toInt()),
+            to = ColorSpec.Solid(0xFF2A2A32.toInt()),
+        ),
+    )
+    else -> theme.copy(background = BackgroundSpec.Wallpaper(0.35f))
 }
 ```
 
@@ -5693,6 +5819,7 @@ fun AppearanceTab(
 ```kotlin
 package dev.liner.launcher.ui.settings
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -5705,20 +5832,29 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.liner.launcher.model.InstalledApp
 import dev.liner.launcher.model.LayoutDocument
+import dev.liner.launcher.model.updateTheme
 
 private val TABS = listOf("Appearance", "Apps", "Sections", "Import / Export", "Advanced")
 private val TAB_KEYS = listOf("appearance", "apps", "sections", "importexport", "advanced")
 
+/**
+ * The settings screen: the tabs, and the tab the user was sent to.
+ *
+ * The screen holds no state of its own beyond the selected tab — every
+ * change goes back to the caller, which is the only thing that writes to
+ * the store.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -5728,7 +5864,7 @@ fun SettingsScreen(
     writeFailed: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
 ) {
-    val startIndex = remember(initialTab) { TAB_KEYS.indexOf(initialTab).coerceAtLeast(0) }
+    val startIndex = remember(initialTab) { tabIndexFor(initialTab) }
     var selectedTab by rememberSaveable { mutableIntStateOf(startIndex) }
 
     // A failed save must not be silent.
@@ -5798,6 +5934,19 @@ fun SettingsScreen(
         }
     }
 }
+
+/**
+ * The index of the tab the user was sent to.
+ *
+ * The keys are the ones the rest of the app opens settings with — the
+ * drawer's gear opens "appearance", the home screen's empty state opens
+ * "apps". An unknown or missing key falls back to the first tab rather
+ * than leaving the screen on nothing.
+ */
+internal fun tabIndexFor(key: String?): Int {
+    val index = key?.let { TAB_KEYS.indexOf(it) } ?: -1
+    return index.coerceAtLeast(0)
+}
 ```
 
 `ui/settings/SettingsViewModel.kt`:
@@ -5817,6 +5966,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
+/**
+ * The settings screen's state: the layout document and the installed apps.
+ *
+ * The view model owns no storage of its own — every change is handed to the
+ * repository, which is the only thing that writes.
+ */
 class SettingsViewModel(
     private val repository: LayoutRepository,
     private val appsRepository: InstalledAppsRepository,
@@ -5824,17 +5979,16 @@ class SettingsViewModel(
 
     val document: StateFlow<LayoutDocument> = repository.document
 
-    /** True when the last save failed — the screen shows a notice for it. */
+    /** True when the last save failed; the screen turns it into a notice. */
     val writeFailed: StateFlow<Boolean> = repository.writeFailed
 
     private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
     val installedApps: StateFlow<List<InstalledApp>> = _installedApps
 
     init {
-        // The repository reads the store once per process, so this is a no-op
-        // when the home screen has already loaded it — and it must never
-        // clobber an edit that has not been written back yet.
         viewModelScope.launch { repository.load() }
+        // The package manager query is not cheap, so it stays off the main
+        // thread.
         viewModelScope.launch(Dispatchers.IO) {
             _installedApps.value = appsRepository.loadInstalledApps()
         }
@@ -5881,6 +6035,8 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val initialTab = intent.getStringExtra(EXTRA_TAB)
+
         setContent {
             LinerTheme {
                 val document by viewModel.document.collectAsStateWithLifecycle()
@@ -5890,7 +6046,7 @@ class SettingsActivity : ComponentActivity() {
                 SettingsScreen(
                     document = document,
                     installedApps = apps,
-                    initialTab = intent.getStringExtra(EXTRA_TAB),
+                    initialTab = initialTab,
                     writeFailed = writeFailed,
                     onUpdate = viewModel::update,
                 )
@@ -5918,30 +6074,169 @@ package dev.liner.launcher.ui.settings
 
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import dev.liner.launcher.model.InstalledApp
+import dev.liner.launcher.model.LayoutDocument
 
+/** The Apps tab. Fully implemented in Task 13. */
 @Composable
 fun AppsTab(
-    document: dev.liner.launcher.model.LayoutDocument,
-    installedApps: List<dev.liner.launcher.model.InstalledApp>,
-    onUpdate: ((dev.liner.launcher.model.LayoutDocument) -> dev.liner.launcher.model.LayoutDocument) -> Unit,
+    document: LayoutDocument,
+    installedApps: List<InstalledApp>,
+    onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
 ) {
     Text("Apps")
 }
 ```
 
-Repeat for the other three with the same signature shape they will keep in Tasks 13–14 (`SectionsTab(document, onUpdate)`, `ImportExportTab(document, onUpdate)`, `AdvancedTab(document, onUpdate)`).
+Repeat for the other three with the same signature shape they will keep in Tasks 13–14 (`SectionsTab(document, onUpdate)`, `ImportExportTab(document, onUpdate)`, `AdvancedTab(document, onUpdate)`). Each placeholder renders a single `Text` with its tab's name.
 
-- [ ] **Step 6: Build and verify**
+- [ ] **Step 6: Pin the settings decisions with a unit test**
+
+The composables themselves cannot be exercised headlessly — the project's
+unit-test source set has no Compose UI test dependency and there is no
+emulator — so the decisions they make are pulled into plain `internal`
+functions (see the Interfaces list) and checked in
+`app/src/test/kotlin/dev/liner/launcher/ui/settings/SettingsAppearanceTest.kt`:
+
+```kotlin
+package dev.liner.launcher.ui.settings
+
+import dev.liner.launcher.model.BackgroundSpec
+import dev.liner.launcher.model.ColorSpec
+import dev.liner.launcher.model.ThemeTokens
+import dev.liner.launcher.ui.common.formatSliderValue
+import dev.liner.launcher.ui.common.isPaletteColorSelected
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The decisions behind the appearance tab and the settings screen.
+ *
+ * The tab and the screen are composables, so their decisions are pulled into
+ * plain functions that can be checked without a device — the project's
+ * unit-test source set has no Compose UI test dependency and the sandbox has
+ * no emulator.
+ */
+class SettingsAppearanceTest {
+
+    @Test
+    fun `the tabs the rest of the app opens resolve to the right tab`() {
+        // The drawer's gear opens "appearance" and the home screen's empty
+        // state opens "apps"; both have to land on the tab they name.
+        assertEquals(0, tabIndexFor("appearance"))
+        assertEquals(1, tabIndexFor("apps"))
+        assertEquals(2, tabIndexFor("sections"))
+        assertEquals(3, tabIndexFor("importexport"))
+        assertEquals(4, tabIndexFor("advanced"))
+    }
+
+    @Test
+    fun `an unknown tab falls back to the first tab`() {
+        assertEquals(0, tabIndexFor(null))
+        assertEquals(0, tabIndexFor("nonsense"))
+        assertEquals(0, tabIndexFor("Appearance"))
+    }
+
+    @Test
+    fun `a background style is named the way the style chips spell it`() {
+        assertEquals("solid", backgroundStyleLabel(BackgroundSpec.Solid(ColorSpec.FollowSystem)))
+        assertEquals(
+            "gradient",
+            backgroundStyleLabel(
+                BackgroundSpec.Gradient(ColorSpec.FollowSystem, ColorSpec.FollowSystem),
+            ),
+        )
+        assertEquals("wallpaper", backgroundStyleLabel(BackgroundSpec.Wallpaper(0.35f)))
+    }
+
+    @Test
+    fun `picking the solid style gives the theme a solid background`() {
+        val theme = applyBackgroundStyle(ThemeTokens(), "solid")
+
+        assertEquals(BackgroundSpec.Solid(ColorSpec.Solid(0xFF101014.toInt())), theme.background)
+    }
+
+    @Test
+    fun `picking the gradient style gives the theme a gradient background`() {
+        val theme = applyBackgroundStyle(ThemeTokens(), "gradient")
+
+        assertEquals(
+            BackgroundSpec.Gradient(
+                from = ColorSpec.Solid(0xFF101014.toInt()),
+                to = ColorSpec.Solid(0xFF2A2A32.toInt()),
+            ),
+            theme.background,
+        )
+    }
+
+    @Test
+    fun `picking the wallpaper style gives the theme a wallpaper background`() {
+        val theme = applyBackgroundStyle(ThemeTokens(), "wallpaper")
+
+        assertEquals(BackgroundSpec.Wallpaper(0.35f), theme.background)
+    }
+
+    @Test
+    fun `an unknown background style leaves the theme with a background`() {
+        val theme = applyBackgroundStyle(ThemeTokens(), "nonsense")
+
+        assertEquals(BackgroundSpec.Wallpaper(0.35f), theme.background)
+    }
+
+    @Test
+    fun `picking a background style leaves the other tokens alone`() {
+        val theme = ThemeTokens(listTextSizeSp = 33f, listFontFamily = "serif")
+
+        val result = applyBackgroundStyle(theme, "solid")
+
+        assertEquals(33f, result.listTextSizeSp, 0.001f)
+        assertEquals("serif", result.listFontFamily)
+    }
+
+    @Test
+    fun `a whole slider value is shown without decimals`() {
+        assertEquals("20", formatSliderValue(20f))
+        assertEquals("0", formatSliderValue(0f))
+        assertEquals("-8", formatSliderValue(-8f))
+    }
+
+    @Test
+    fun `a fractional slider value is shown with two decimals`() {
+        // The decimal separator follows the locale, so the digits are what
+        // the assertion pins.
+        assertTrue(formatSliderValue(20.5f).matches(Regex("20[.,]50")))
+        assertTrue(formatSliderValue(0.05f).matches(Regex("0[.,]05")))
+    }
+
+    @Test
+    fun `the picked palette colour is the selected one`() {
+        val argb = 0xFFE53935.toInt()
+
+        assertTrue(isPaletteColorSelected(ColorSpec.Solid(argb), argb))
+        assertFalse(isPaletteColorSelected(ColorSpec.Solid(argb), 0xFF43A047.toInt()))
+    }
+
+    @Test
+    fun `following the system selects no palette colour`() {
+        assertFalse(isPaletteColorSelected(ColorSpec.FollowSystem, 0xFF000000.toInt()))
+    }
+}
+```
+
+- [ ] **Step 7: Build and verify**
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add app/src/main/kotlin/dev/liner/launcher/ui/settings app/src/main/kotlin/dev/liner/launcher/ui/common \
-        app/src/main/kotlin/dev/liner/launcher/platform
+        app/src/main/kotlin/dev/liner/launcher/platform \
+        app/src/test/kotlin/dev/liner/launcher/ui/settings
 git commit -m "feat(settings): add settings scaffold and the appearance tab"
 ```
 
