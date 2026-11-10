@@ -4875,13 +4875,36 @@ In `LauncherActivity.kt`, pass `iconCache = container.iconCache` and implement
     }
 ```
 
-- [ ] **Step 7: Build and verify**
+- [ ] **Step 7: Keep the remembered items across an activity recreation**
+
+The Apps tab remembers the `HomeItem` of every app the user has unchecked, so
+that re-checking it restores the label, the style and the section. That map
+lives in composable state (`remember`), and `SettingsActivity` declares no
+`android:configChanges`, so a rotation recreates the activity and the map is
+emptied — the next re-check loses the customisation, which is the defect the
+review found in a narrow window.
+
+Hold the map in `SettingsViewModel`, which survives the configuration change,
+and pass it to the tab:
+
+- `SettingsViewModel` gains `val removedItems: Map<String, RemovedHomeItem>`
+  (a `mutableStateMapOf` or a `MutableStateFlow<Map<...>>`), with a
+  `fun rememberRemoved(packageName: String, item: HomeItem, sectionId: String,
+  index: Int)` that records it and a `fun forgetRemoved(packageName: String)`
+  that drops it;
+- `SettingsScreen` passes it down to `AppsTab`;
+- `AppsTab` reads and writes the view model's map instead of its own.
+
+`RemovedHomeItem` is a small data class holding the item, its section id and
+its index.
+
+- [ ] **Step 8: Build and verify**
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add app/src/main/kotlin/dev/liner/launcher/ui app/src/main/kotlin/dev/liner/launcher/platform \
