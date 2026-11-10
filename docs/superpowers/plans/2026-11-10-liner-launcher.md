@@ -2764,6 +2764,7 @@ by the instrumentation tests in Task 15.
 ```kotlin
 package dev.liner.launcher.apps
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import dev.liner.launcher.model.InstalledApp
@@ -3044,12 +3045,20 @@ class ThemeMappingTest {
     @Test
     fun `known font keys map to the expected families`() {
         assertEquals(FontFamily.SansSerif, fontFamilyFor("sans-serif"))
-        assertEquals(FontFamily.SansSerif, fontFamilyFor("sans-serif-light"))
-        assertEquals(FontFamily.SansSerif, fontFamilyFor("sans-serif-medium"))
-        assertEquals(FontFamily.SansSerif, fontFamilyFor("sans-serif-condensed"))
         assertEquals(FontFamily.Serif, fontFamilyFor("serif"))
         assertEquals(FontFamily.Monospace, fontFamilyFor("monospace"))
         assertEquals(FontFamily.Cursive, fontFamilyFor("cursive"))
+    }
+
+    @Test
+    fun `every offered font key renders differently`() {
+        val families = FONT_KEYS.map { fontFamilyFor(it) }
+
+        assertEquals(
+            "every font the picker offers must look different",
+            FONT_KEYS.size,
+            families.distinct().size,
+        )
     }
 
     @Test
@@ -3094,12 +3103,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 
-/** The font families a user can pick from in Settings → Appearance. */
+/**
+ * The font families a user can pick from in Settings → Appearance.
+ *
+ * Only genuinely distinct families are offered. The platform's
+ * "sans-serif-light", "sans-serif-medium" and "sans-serif-condensed" faces
+ * cannot be referenced from Compose without bundling the font files as
+ * resources — `android.R.font` does not expose them and Compose's `Font`
+ * factory only accepts a resource id — so offering them would present three
+ * choices that render identically to plain sans-serif.
+ */
 val FONT_KEYS = listOf(
     "sans-serif",
-    "sans-serif-light",
-    "sans-serif-medium",
-    "sans-serif-condensed",
     "serif",
     "monospace",
     "cursive",
@@ -3133,6 +3148,7 @@ fun LinerTheme(
     val colors = if (darkTheme) {
         darkColorScheme(
             primary = Color(0xFFE8E8ED),
+            onPrimary = Color(0xFF101014),
             background = Color(0xFF101014),
             surface = Color(0xFF101014),
             onBackground = Color(0xFFF5F5F7),
@@ -3141,6 +3157,7 @@ fun LinerTheme(
     } else {
         lightColorScheme(
             primary = Color(0xFF1A1A1E),
+            onPrimary = Color(0xFFFAFAFC),
             background = Color(0xFFFAFAFC),
             surface = Color(0xFFFAFAFC),
             onBackground = Color(0xFF1A1A1E),
@@ -3159,6 +3176,7 @@ fun LinerTheme(
 ```kotlin
 package dev.liner.launcher.platform
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import dev.liner.launcher.model.InstalledApp
@@ -3171,7 +3189,7 @@ class AppLauncher(context: Context) {
     fun launch(app: InstalledApp): Boolean = try {
         val intent = Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_LAUNCHER)
-            .setComponent(android.content.ComponentName(app.packageName, app.activityClass))
+            .setComponent(ComponentName(app.packageName, app.activityClass))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         appContext.startActivity(intent)
         true
@@ -3189,42 +3207,73 @@ package dev.liner.launcher.platform
 import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 
 object DefaultHomeDetector {
 
-    /** True when Liner is currently the resolved home app. */
-    fun isDefaultHome(context: Context): Boolean = try {
-        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-        val resolved = context.packageManager.queryIntentActivities(intent, 0)
-        resolved.any { it.activityInfo?.packageName == context.packageName }
-    } catch (_: Throwable) {
-        false
+    /**
+     * True when Liner is currently the default home app.
+     *
+     * On API 29+ the HOME role is the authoritative answer. Below that, the
+     * *resolved* default home activity is the answer — note that
+     * `queryIntentActivities` is not, because it returns every activity that
+     * handles the intent, and Liner is always among them.
+     */
+    fun isDefaultHome(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = runCatching {
+                context.getSystemService(RoleManager::class.java)
+            }.getOrNull()
+            val held = roleManager?.let {
+                runCatching { it.isRoleHeld(RoleManager.ROLE_HOME) }.getOrNull()
+            }
+            if (held != null) return held
+        }
+
+        return try {
+            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            val resolved = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            resolved?.activityInfo?.packageName == context.packageName
+        } catch (_: Throwable) {
+            // The query is a package-manager round trip; if it fails the
+            // launcher cannot prove it is the default home app, but it must
+            // not crash.
+            false
+        }
     }
 
     /** Fires the system flow that lets the user make Liner the default home app. */
     fun requestDefaultHome(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val roleManager = runCatching { context.getSystemService(RoleManager::class.java) }.getOrNull()
-            if (roleManager != null && canRequestHomeRole(roleManager)) {
-                runCatching {
-                    context.startActivity(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
-                }.onFailure { openHomeSettings(context) }
-                return
+            if (roleManager != null) {
+                // Nothing to do if Liner already holds the role — sending the
+                // user to a settings screen with nothing to change is worse
+                // than doing nothing.
+                if (isRoleHeld(roleManager)) return
+                if (isRoleAvailable(roleManager)) {
+                    runCatching {
+                        context.startActivity(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
+                    }.onFailure { openHomeSettings(context) }
+                    return
+                }
             }
         }
         openHomeSettings(context)
     }
 
     /**
-     * True when the system offers the home role and Liner does not hold it yet.
-     *
-     * The role queries are remote calls, so a failure here falls back to the
-     * home settings screen rather than crashing the launcher.
+     * The role queries are remote calls, so a failure here is treated as
+     * "unknown" rather than crashing the launcher.
      */
-    private fun canRequestHomeRole(roleManager: RoleManager): Boolean = runCatching {
-        roleManager.isRoleAvailable(RoleManager.ROLE_HOME) && !roleManager.isRoleHeld(RoleManager.ROLE_HOME)
+    private fun isRoleHeld(roleManager: RoleManager): Boolean = runCatching {
+        roleManager.isRoleHeld(RoleManager.ROLE_HOME)
+    }.getOrDefault(false)
+
+    private fun isRoleAvailable(roleManager: RoleManager): Boolean = runCatching {
+        roleManager.isRoleAvailable(RoleManager.ROLE_HOME)
     }.getOrDefault(false)
 
     private fun openHomeSettings(context: Context) {
@@ -3248,13 +3297,18 @@ import android.graphics.drawable.Drawable
 
 object WallpaperProvider {
     /** Returns the system wallpaper, or null when it cannot be read. Never throws. */
-    fun load(context: Context): Drawable? = try {
-        WallpaperManager.getInstance(context).getDrawable()
-    } catch (_: Throwable) {
-        try {
-            WallpaperManager.getInstance(context).getDrawable(WallpaperManager.FLAG_SYSTEM)
+    fun load(context: Context): Drawable? {
+        val manager = WallpaperManager.getInstance(context)
+        // A null result means "no wallpaper set" — the system wallpaper may
+        // still be there, so try the system flag before giving up.
+        return try {
+            manager.getDrawable() ?: manager.getDrawable(WallpaperManager.FLAG_SYSTEM)
         } catch (_: Throwable) {
-            null
+            try {
+                manager.getDrawable(WallpaperManager.FLAG_SYSTEM)
+            } catch (_: Throwable) {
+                null
+            }
         }
     }
 }
