@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The exported layouts live in the cache directory, so the provider may
+    only hand out files from there: the cache is the one place the launcher
+    can write without asking the user for a permission.
+-->
+<paths>
+    <cache-path name="exports" path="exports/" />
+</paths>

@@ -46,6 +46,21 @@
             </intent-filter>
         </activity>
 
+        <!--
+            The exported layouts are shared as files, so they need a content
+            uri the receiving app can read. The provider hands out nothing
+            but the files in the cache directory's exports folder.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 
 </manifest>
