@@ -249,6 +249,60 @@ class DocumentEditsTest {
     }
 
     @Test
+    fun `pruneUninstalledApps removes nothing while auto-pruning is off`() {
+        val before = doc().setAutoPruneUninstalled(false)
+
+        val result = before.pruneUninstalledApps(setOf("p.a", "p.b"))
+
+        assertEquals(before, result)
+        assertEquals(listOf("a", "b", "c"), result.sections[0].items.map { it.id })
+        assertEquals(listOf("d"), result.sections[1].items.map { it.id })
+    }
+
+    @Test
+    fun `pruneUninstalledApps removes only the apps that are gone`() {
+        val before = doc().setAutoPruneUninstalled(true)
+
+        val result = before.pruneUninstalledApps(setOf("p.a", "p.c", "p.d"))
+
+        // The surviving items keep their order and their section.
+        assertEquals(listOf("a", "c"), result.sections[0].items.map { it.id })
+        assertEquals(listOf("d"), result.sections[1].items.map { it.id })
+        assertEquals(listOf("s1", "s2"), result.sections.map { it.id })
+    }
+
+    @Test
+    fun `pruneUninstalledApps removes an app from the section it sits in`() {
+        val before = doc().setAutoPruneUninstalled(true)
+
+        val result = before.pruneUninstalledApps(setOf("p.a", "p.b", "p.c"))
+
+        assertEquals(listOf("a", "b", "c"), result.sections[0].items.map { it.id })
+        assertTrue(result.sections[1].items.isEmpty())
+    }
+
+    @Test
+    fun `pruneUninstalledApps changes nothing when nothing is stale`() {
+        val before = doc().setAutoPruneUninstalled(true)
+
+        val result = before.pruneUninstalledApps(setOf("p.a", "p.b", "p.c", "p.d"))
+
+        assertEquals(before, result)
+    }
+
+    @Test
+    fun `pruneUninstalledApps on an empty installed list would empty the home screen`() {
+        // This is what the caller must never do: an empty list is not
+        // evidence that every app was uninstalled. The trust check in
+        // AppListProvider is what keeps it from ever getting here.
+        val before = doc().setAutoPruneUninstalled(true)
+
+        val result = before.pruneUninstalledApps(emptySet())
+
+        assertTrue(result.sections.all { it.items.isEmpty() })
+    }
+
+    @Test
     fun `updateTheme transforms the theme`() {
         val result = doc().updateTheme { it.copy(listTextSizeSp = 42f) }
 

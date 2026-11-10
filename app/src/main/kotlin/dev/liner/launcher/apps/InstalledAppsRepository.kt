@@ -17,10 +17,22 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
     @Volatile
     private var lastSuccessful: List<InstalledApp> = emptyList()
 
+    /**
+     * True when the most recent [load] fell back to the remembered
+     * list rather than returning a fresh query. The fallback covers a failed
+     * query and one that came back empty because the OS filtered the package
+     * visibility. Neither is evidence that the apps were uninstalled, so a
+     * fallback list must never be used to decide that an app is gone.
+     */
+    @Volatile
+    var lastLoadWasFallback: Boolean = false
+        private set
+
     fun load(): List<InstalledApp> = try {
         val apps = query()
         if (apps.isNotEmpty()) {
             lastSuccessful = apps
+            lastLoadWasFallback = false
             apps
         } else {
             // An empty result is not a successful result: some OEMs surface
@@ -29,12 +41,14 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
             // cache. A device always has at least one launchable activity —
             // its own launcher — so an empty list means the query was
             // filtered, and the remembered list stands in for it.
+            lastLoadWasFallback = true
             apps.ifEmpty { lastSuccessful }
         }
     } catch (_: Exception) {
         // Exception, not Throwable, to match the icon path: a bug or an
         // OutOfMemoryError must surface rather than being swallowed into a
         // silent fallback.
+        lastLoadWasFallback = true
         lastSuccessful
     }
 }
@@ -53,6 +67,13 @@ class InstalledAppsRepository(context: Context) {
     private val provider = AppListProvider { queryInstalledApps() }
 
     fun loadInstalledApps(): List<InstalledApp> = provider.load()
+
+    /**
+     * True when the most recent [loadInstalledApps] fell back to the
+     * remembered list instead of returning a fresh query. A fallback list
+     * must never be used to decide that an app has been uninstalled.
+     */
+    fun lastLoadWasFallback(): Boolean = provider.lastLoadWasFallback
 
     private fun queryInstalledApps(): List<InstalledApp> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)

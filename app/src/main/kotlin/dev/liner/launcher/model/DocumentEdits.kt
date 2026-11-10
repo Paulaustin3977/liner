@@ -106,6 +106,23 @@ fun LayoutDocument.setHiddenFromDrawer(packageName: String, hidden: Boolean): La
 fun LayoutDocument.setAutoPruneUninstalled(enabled: Boolean): LayoutDocument =
     copy(autoPruneUninstalled = enabled)
 
+/**
+ * Removes every home item whose package is not in [installedPackages].
+ *
+ * A no-op when auto-pruning is off, and a no-op when nothing is stale.
+ *
+ * The caller MUST pass a list that really came from the package manager.
+ * A query that failed, or one that came back empty because the OS filtered
+ * the package visibility, is not evidence that the apps were uninstalled —
+ * pruning on it would delete the user's whole home screen.
+ */
+fun LayoutDocument.pruneUninstalledApps(installedPackages: Set<String>): LayoutDocument {
+    if (!autoPruneUninstalled) return this
+    val stale = sections.flatMap { it.items }.filter { it.packageName !in installedPackages }
+    if (stale.isEmpty()) return this
+    return stale.fold(this) { document, item -> document.removeItem(item.id) }
+}
+
 fun LayoutDocument.updateTheme(transform: (ThemeTokens) -> ThemeTokens): LayoutDocument =
     copy(theme = transform(theme))
 
