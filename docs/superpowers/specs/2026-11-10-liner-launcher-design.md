@@ -313,6 +313,9 @@ Tabs:
 
 **Appearance**
 - Background: solid / gradient (two stops + angle) / wallpaper + dim scrim (0–90%)
+  - Gradient angle: measured clockwise from vertical, so `0` runs top-to-bottom
+    (`from` at the top, `to` at the bottom), `90` runs left-to-right, `180`
+    runs bottom-to-top.
 - Text color: solid picker, or follow light/dark
 - List font family: `sans-serif`, `serif`, `monospace`, `cursive` — only
   genuinely distinct families. The platform's light/medium/condensed faces

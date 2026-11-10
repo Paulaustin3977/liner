@@ -3431,10 +3431,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import kotlin.math.cos
+import kotlin.math.sin
 import dev.liner.launcher.model.BackgroundSpec
 import dev.liner.launcher.model.ColorSpec
 
@@ -3458,14 +3461,19 @@ fun BackgroundLayer(
             is BackgroundSpec.Gradient -> {
                 val from = spec.from.toColor(systemTextColor)
                 val to = spec.to.toColor(systemTextColor)
+                // The angle is measured clockwise from vertical: 0 runs
+                // top-to-bottom (from at the top), 90 runs left-to-right.
+                val radians = Math.toRadians(spec.angleDegrees.toDouble())
+                val dx = sin(radians).toFloat()
+                val dy = cos(radians).toFloat()
                 Box(
                     Modifier
                         .fillMaxSize()
                         .background(
                             Brush.linearGradient(
                                 colors = listOf(from, to),
-                                start = androidx.compose.ui.geometry.Offset.Zero,
-                                end = androidx.compose.ui.geometry.Offset.Infinite,
+                                start = Offset(0.5f - dx * 0.5f, 0.5f - dy * 0.5f),
+                                end = Offset(0.5f + dx * 0.5f, 0.5f + dy * 0.5f),
                             ),
                         ),
                 )
@@ -3730,6 +3738,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -3763,6 +3772,19 @@ fun HomeScreen(
     val document by viewModel.document.collectAsStateWithLifecycle()
     val entries by viewModel.homeEntries.collectAsStateWithLifecycle()
     val loadFailed by viewModel.loadFailed.collectAsStateWithLifecycle()
+    val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
+
+    // A failed save must not be silent — the spec requires a notice.
+    val writeContext = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.LaunchedEffect(writeFailed) {
+        if (writeFailed) {
+            android.widget.Toast.makeText(
+                writeContext,
+                "Your changes could not be saved. Try again.",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
 
     // The stored layout could not be read. Tell the user once, rather than
     // silently showing them a default screen they never configured, and hand
@@ -3790,6 +3812,19 @@ fun HomeScreen(
 
     Box(Modifier.fillMaxSize()) {
         BackgroundLayer(spec = theme.background, wallpaper = wallpaper, systemTextColor = systemTextColor)
+
+        if (entries.isEmpty()) {
+            // Nothing chosen yet: point the user at the Apps tab rather than
+            // showing a blank screen.
+            Column(
+                Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("No apps on your home screen yet", fontSize = 16.sp)
+                TextButton(onClick = { onOpenSettings("apps") }) { Text("Choose apps") }
+            }
+        }
 
         Column(
             Modifier
