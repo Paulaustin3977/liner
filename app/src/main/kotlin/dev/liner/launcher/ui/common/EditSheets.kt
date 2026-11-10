@@ -2,7 +2,10 @@ package dev.liner.launcher.ui.common
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -15,6 +18,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.liner.launcher.model.HomeEntry
+
+/**
+ * How tall a dialog's content may grow before it starts scrolling.
+ *
+ * A dialog does not scroll its content: a list that is taller than the
+ * dialog is cut off, and the lower entries can never be reached. The cap
+ * gives the content a bounded height, and the scroll lets the user move
+ * through it.
+ */
+private val DIALOG_CONTENT_MAX_HEIGHT = 320.dp
 
 /**
  * The editor for one home item: rename it, move it to another section, or
@@ -42,7 +55,13 @@ fun ItemEditorSheet(
         onDismissRequest = onDismiss,
         title = { Text(entry.displayLabel) },
         text = {
-            Column {
+            // The content scrolls: the list of sections can be taller than
+            // the dialog, and the lower sections would be unreachable.
+            Column(
+                Modifier
+                    .heightIn(max = DIALOG_CONTENT_MAX_HEIGHT)
+                    .verticalScroll(rememberScrollState()),
+            ) {
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it },
@@ -137,7 +156,14 @@ fun SectionChooserSheet(
         onDismissRequest = onDismiss,
         title = { Text("Move to section") },
         text = {
-            Column {
+            // The content scrolls: with more sections than fit on the
+            // screen the lower ones would be unreachable — and this chooser
+            // is the only way to move an item between sections.
+            Column(
+                Modifier
+                    .heightIn(max = DIALOG_CONTENT_MAX_HEIGHT)
+                    .verticalScroll(rememberScrollState()),
+            ) {
                 if (targets.isEmpty()) {
                     Text("There is no other section to move it to.")
                 } else {

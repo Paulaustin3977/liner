@@ -10,6 +10,7 @@ import dev.liner.launcher.store.LayoutRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -39,16 +40,20 @@ class SettingsViewModel(
     private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
     val installedApps: StateFlow<List<InstalledApp>> = _installedApps
 
+    /**
+     * Whether the installed-app list has finished its query. Until it has,
+     * an empty list means "not loaded yet", not "no apps installed" — the
+     * apps tab must not show an empty list during that window.
+     */
+    private val _appsLoaded = MutableStateFlow(false)
+    val appsLoaded: StateFlow<Boolean> = _appsLoaded.asStateFlow()
+
     init {
         // The repository reads the store once per process, so this is a no-op
         // when the home screen has already loaded it — and it must never
         // clobber an edit that has not been written back yet.
         viewModelScope.launch { repository.load() }
-        // The package manager query is not cheap, so it stays off the main
-        // thread.
-        viewModelScope.launch(Dispatchers.IO) {
-            _installedApps.value = appsRepository.loadInstalledApps()
-        }
+        refreshApps()
     }
 
     fun update(transform: (LayoutDocument) -> LayoutDocument) = repository.update(transform)
@@ -62,7 +67,13 @@ class SettingsViewModel(
      */
     fun refreshApps() {
         viewModelScope.launch(Dispatchers.IO) {
-            _installedApps.value = appsRepository.loadInstalledApps()
+            try {
+                _installedApps.value = appsRepository.loadInstalledApps()
+            } finally {
+                // Even a failed query means "we have looked" — without this
+                // the UI would wait forever before showing its states.
+                _appsLoaded.value = true
+            }
         }
     }
 

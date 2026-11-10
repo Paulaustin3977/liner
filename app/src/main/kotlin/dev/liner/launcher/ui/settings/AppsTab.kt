@@ -62,17 +62,26 @@ import java.util.UUID
  * beside the name hides the app from the drawer (and shows it again), and the
  * one next to that moves the app to another section. Every change goes
  * through [onUpdate], which is the only thing that writes.
+ *
+ * [appsLoaded] tells the tab whether the package manager has answered yet:
+ * an empty list before that means "not loaded", not "no apps installed".
  */
 @Composable
 fun AppsTab(
     document: LayoutDocument,
     installedApps: List<InstalledApp>,
+    appsLoaded: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
     onRefresh: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
     // The home item the section chooser is open for.
     var movingItemId by remember { mutableStateOf<String?>(null) }
+    // The home items that were taken off the home screen, by package name.
+    // An app that is put back must keep the label and the style the user
+    // gave it, so the item itself is kept — not just the knowledge that the
+    // app was there.
+    var removedItems by remember { mutableStateOf(emptyMap<String, RemovedHomeItem>()) }
 
     val installedByPackage = remember(installedApps) {
         installedApps.associateBy { it.packageName }
@@ -82,6 +91,8 @@ fun AppsTab(
         AppCatalog.homeEntries(document, installedByPackage)
     }
     val homeByPackage = remember(homeEntries) {
+        // An app is on the home screen when *any* item carries its package:
+        // a document can hold the same app in two sections.
         homeEntries.associateBy { it.item.packageName }
     }
 
@@ -98,25 +109,20 @@ fun AppsTab(
     // once — and it is made against the document as it is NOW: an edit that
     // has not been recomposed yet must not be undone by a stale copy.
     fun toggleHome(packageName: String) {
+        val remembered = removedItems[packageName]
+        var removed: RemovedHomeItem? = null
         onUpdate { doc ->
-            val onHome = doc.sections.asSequence()
-                .flatMap { it.items.asSequence() }
-                .firstOrNull { it.packageName == packageName }
-            if (onHome != null) {
-                doc.removeItem(onHome.id)
-            } else {
-                // The home screen needs a section to hold the app, so one is
-                // created on demand when the document has none.
-                val sectionId = doc.sections.firstOrNull()?.id ?: "default-${UUID.randomUUID()}"
-                val withSection = if (doc.sections.isEmpty()) doc.addSection(sectionId, null) else doc
-                withSection.addItem(
-                    item = HomeItem(
-                        id = UUID.randomUUID().toString(),
-                        packageName = packageName,
-                    ),
-                    sectionId = sectionId,
-                )
-            }
+            val result = toggleHomeApp(doc, packageName, remembered)
+            removed = result.removed
+            result.document
+        }
+        // The item that was taken off the home screen is remembered, so that
+        // putting it back keeps the label and the style the user gave it.
+        val taken = removed
+        removedItems = if (taken != null) {
+            removedItems + (packageName to taken)
+        } else {
+            removedItems - packageName
         }
     }
 
@@ -166,45 +172,57 @@ fun AppsTab(
                     modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                 )
             }
-            items(visible, key = { it.packageName }) { app ->
-                val home = homeByPackage[app.packageName]
-                val isHidden = app.packageName in document.hiddenFromDrawer
-
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Checkbox(
-                        checked = home != null,
-                        onCheckedChange = { toggleHome(app.packageName) },
-                    )
+            if (!appsLoaded) {
+                // The package manager has not answered yet, so an empty list
+                // means "still loading", not "no apps installed".
+                item(key = "loading") {
                     Text(
-                        text = app.systemLabel,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { toggleHome(app.packageName) },
+                        text = "Loading…",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(vertical = 8.dp),
                     )
-                    // Only an app that is on the home screen is in a section,
-                    // so only it can be moved to one.
-                    if (home != null) {
-                        TextButton(onClick = { movingItemId = home.item.id }) {
-                            Text("Move to section")
-                        }
-                    }
-                    TextButton(
-                        onClick = {
-                            onUpdate { doc ->
-                                doc.setHiddenFromDrawer(
-                                    app.packageName,
-                                    app.packageName !in doc.hiddenFromDrawer,
-                                )
-                            }
-                        },
+                }
+            } else {
+                items(visible, key = { it.packageName }) { app ->
+                    val home = homeByPackage[app.packageName]
+                    val isHidden = app.packageName in document.hiddenFromDrawer
+
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(if (isHidden) "Show" else "Hide")
+                        Checkbox(
+                            checked = home != null,
+                            onCheckedChange = { toggleHome(app.packageName) },
+                        )
+                        Text(
+                            text = app.systemLabel,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { toggleHome(app.packageName) },
+                        )
+                        // Only an app that is on the home screen is in a section,
+                        // so only it can be moved to one.
+                        if (home != null) {
+                            TextButton(onClick = { movingItemId = home.item.id }) {
+                                Text("Move to section")
+                            }
+                        }
+                        TextButton(
+                            onClick = {
+                                onUpdate { doc ->
+                                    doc.setHiddenFromDrawer(
+                                        app.packageName,
+                                        app.packageName !in doc.hiddenFromDrawer,
+                                    )
+                                }
+                            },
+                        ) {
+                            Text(if (isHidden) "Show" else "Hide")
+                        }
                     }
                 }
             }
@@ -261,6 +279,85 @@ internal fun moveItemToTarget(
         target.sectionId,
         document.sectionById(target.sectionId)?.items?.size ?: 0,
     )
+}
+
+/**
+ * A home item that was taken off the home screen, with the section it was in
+ * and its place in it.
+ *
+ * The item itself is kept — not just the knowledge that the app was there —
+ * because its label and its style belong to the user: a new item in its
+ * place would silently drop both.
+ */
+internal data class RemovedHomeItem(
+    val item: HomeItem,
+    val sectionId: String,
+    val index: Int,
+)
+
+/**
+ * What a toggle of the home-screen checkbox did.
+ *
+ * [removed] is the item that was taken off the home screen, and is null when
+ * the app was put on the home screen instead.
+ */
+internal data class HomeToggleResult(
+    val document: LayoutDocument,
+    val removed: RemovedHomeItem?,
+)
+
+/**
+ * Toggles an app on and off the home screen.
+ *
+ * Unchecking takes **every** copy of the app off the home screen: a copy
+ * left in a second section would put the checkbox straight back to *checked*
+ * and leave the app on the home screen, so the control would look as if it
+ * did nothing. The first copy — the one the user sees first — is remembered,
+ * with the section it was in and its place in it.
+ *
+ * Checking puts the app back the way it was: the same item, in the same
+ * section, at the same place, so the label and the style survive the round
+ * trip. An app that was never on the home screen is added to the first
+ * section as a new item, and a section is created on demand when the
+ * document has none.
+ */
+internal fun toggleHomeApp(
+    document: LayoutDocument,
+    packageName: String,
+    remembered: RemovedHomeItem?,
+): HomeToggleResult {
+    val copies = document.sections.flatMap { section ->
+        section.items
+            .filter { it.packageName == packageName }
+            .map { item -> section.id to item }
+    }
+    if (copies.isNotEmpty()) {
+        val (sectionId, item) = copies.first()
+        val index = document.sectionById(sectionId)?.items?.indexOfFirst { it.id == item.id } ?: 0
+        val without = copies.fold(document) { acc, (_, copy) -> acc.removeItem(copy.id) }
+        return HomeToggleResult(without, RemovedHomeItem(item, sectionId, index))
+    }
+
+    // The app is not on the home screen. It goes back into the section it
+    // was taken from — unless that section is gone, in which case the first
+    // section takes it. The item is kept either way.
+    val sectionId = remembered?.sectionId?.takeIf { id -> document.sections.any { it.id == id } }
+        ?: document.sections.firstOrNull()?.id
+        ?: "default-${UUID.randomUUID()}"
+    val withSection = if (document.sections.none { it.id == sectionId }) {
+        document.addSection(sectionId, null)
+    } else {
+        document
+    }
+    val item = remembered?.item
+        ?: HomeItem(id = UUID.randomUUID().toString(), packageName = packageName)
+    // The place the item had only means something in the section it had.
+    val index = if (remembered != null && remembered.sectionId == sectionId) {
+        remembered.index
+    } else {
+        Int.MAX_VALUE
+    }
+    return HomeToggleResult(withSection.addItem(item, sectionId, index), null)
 }
 
 /**

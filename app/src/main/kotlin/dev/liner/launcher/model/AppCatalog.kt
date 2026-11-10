@@ -12,7 +12,6 @@ object AppCatalog {
                 displayLabel = item.label ?: app?.systemLabel ?: item.packageName,
                 available = app != null,
                 sectionId = section.id,
-                sectionTitle = section.title,
             )
         }
     }

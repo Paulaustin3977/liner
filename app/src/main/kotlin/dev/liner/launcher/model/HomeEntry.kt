@@ -5,5 +5,4 @@ data class HomeEntry(
     val displayLabel: String,
     val available: Boolean,
     val sectionId: String,
-    val sectionTitle: String?,
 )

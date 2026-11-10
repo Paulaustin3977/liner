@@ -45,6 +45,7 @@ fun SettingsScreen(
     initialTab: String?,
     writeFailed: Boolean,
     loadFailed: Boolean,
+    appsLoaded: Boolean,
     onUpdate: ((LayoutDocument) -> LayoutDocument) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -123,6 +124,7 @@ fun SettingsScreen(
                     "Apps" -> AppsTab(
                         document = document,
                         installedApps = installedApps,
+                        appsLoaded = appsLoaded,
                         onUpdate = onUpdate,
                         onRefresh = onRefresh,
                     )

@@ -29,6 +29,7 @@ class SettingsActivity : ComponentActivity() {
                 val apps by viewModel.installedApps.collectAsStateWithLifecycle()
                 val writeFailed by viewModel.writeFailed.collectAsStateWithLifecycle()
                 val loadFailed by viewModel.loadFailed.collectAsStateWithLifecycle()
+                val appsLoaded by viewModel.appsLoaded.collectAsStateWithLifecycle()
 
                 SettingsScreen(
                     document = document,
@@ -36,6 +37,7 @@ class SettingsActivity : ComponentActivity() {
                     initialTab = initialTab,
                     writeFailed = writeFailed,
                     loadFailed = loadFailed,
+                    appsLoaded = appsLoaded,
                     onUpdate = viewModel::update,
                     onRefresh = viewModel::refreshApps,
                 )

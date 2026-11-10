@@ -1534,7 +1534,7 @@ git commit -m "feat(model): add pure document edit operations"
 - Consumes: Task 2's model types.
 - Produces:
   - `object StyleResolver { fun resolveItemStyle(theme: ThemeTokens, override: ItemStyle?): ResolvedStyle; fun resolveSectionHeaderStyle(theme: ThemeTokens): ResolvedStyle }`
-  - `data class HomeEntry(item: HomeItem, displayLabel: String, available: Boolean, sectionId: String, sectionTitle: String?)`
+  - `data class HomeEntry(item: HomeItem, displayLabel: String, available: Boolean, sectionId: String)`
   - `object AppCatalog { fun homeEntries(document: LayoutDocument, installed: Map<String, InstalledApp>): List<HomeEntry>; fun drawerApps(document: LayoutDocument, installed: List<InstalledApp>): List<InstalledApp>; fun customLabels(document: LayoutDocument): Map<String, String> }`
   - `object AppFilter { fun filter(apps: List<InstalledApp>, query: String, customLabels: Map<String, String> = emptyMap()): List<InstalledApp> }`
   - `object ClockFormatter { fun formatTime(epochMillis: Long, zone: ZoneId, use24Hour: Boolean, locale: Locale = Locale.getDefault()): String; fun formatDate(epochMillis: Long, zone: ZoneId, style: String, locale: Locale = Locale.getDefault()): String? }`
@@ -1866,7 +1866,6 @@ data class HomeEntry(
     val displayLabel: String,
     val available: Boolean,
     val sectionId: String,
-    val sectionTitle: String?,
 )
 ```
 
@@ -1889,7 +1888,6 @@ object AppCatalog {
                 displayLabel = item.label ?: app?.systemLabel ?: item.packageName,
                 available = app != null,
                 sectionId = section.id,
-                sectionTitle = section.title,
             )
         }
     }
@@ -6511,9 +6509,10 @@ git commit -m "feat(settings): add settings scaffold and the appearance tab"
 - Modify: `app/src/main/kotlin/dev/liner/launcher/ui/settings/SettingsViewModel.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/platform/SettingsActivity.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/ui/common/EditSheets.kt` (the shared section chooser)
-- Create: `app/src/main/kotlin/dev/liner/launcher/model/HomeOrder.kt`
+- Modify: `app/src/main/kotlin/dev/liner/launcher/model/HomeEntry.kt`
+- Modify: `app/src/main/kotlin/dev/liner/launcher/model/AppCatalog.kt`
 - Test: `app/src/test/kotlin/dev/liner/launcher/model/DocumentEditsTest.kt` (extended)
-- Test: `app/src/test/kotlin/dev/liner/launcher/model/HomeOrderTest.kt`
+- Test: `app/src/test/kotlin/dev/liner/launcher/ui/settings/AppsTabHomeToggleTest.kt`
 
 **Interfaces:**
 - Consumes: Task 3's `addItem`, `removeItem`, `reorderHomeItems`, `addSection`, `renameSection`, `removeSection`, `moveSection`, `setHiddenFromDrawer`; Task 6's `LayoutRepository`.
