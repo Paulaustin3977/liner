@@ -1,0 +1,7 @@
+.toolchain/
+.plugin-cache/
+build/
+.gradle/
+*.apk
+*.keystore
+*.jks
