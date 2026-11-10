@@ -39,15 +39,19 @@ class IconCache(
 
         val bitmap = try {
             packageManager.getApplicationIcon(packageName).toImageBitmap()
-        } catch (_: Throwable) {
+        } catch (_: PackageManager.NameNotFoundException) {
+            // The package is genuinely gone. Remember that, so the tile stops
+            // asking for an icon that will never load.
+            unavailable += packageName
+            null
+        } catch (_: Exception) {
+            // A transient failure — deliberately NOT remembered, so the next
+            // attempt retries rather than leaving the tile iconless for the
+            // rest of the session. Errors are deliberately not caught here.
             null
         }
 
-        if (bitmap != null) {
-            cache.put(key, bitmap)
-        } else {
-            unavailable += packageName
-        }
+        if (bitmap != null) cache.put(key, bitmap)
         return bitmap
     }
 
