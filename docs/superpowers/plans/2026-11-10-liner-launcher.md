@@ -1497,6 +1497,23 @@ fun LayoutDocument.setHiddenFromDrawer(packageName: String, hidden: Boolean): La
 fun LayoutDocument.setAutoPruneUninstalled(enabled: Boolean): LayoutDocument =
     copy(autoPruneUninstalled = enabled)
 
+/**
+ * Removes every home item whose package is not in [installedPackages].
+ *
+ * A no-op when auto-pruning is off, and a no-op when nothing is stale.
+ *
+ * The caller MUST pass a list that really came from the package manager.
+ * A query that failed, or one that came back empty because the OS filtered
+ * the package visibility, is not evidence that the apps were uninstalled —
+ * pruning on it would delete the user's whole home screen.
+ */
+fun LayoutDocument.pruneUninstalledApps(installedPackages: Set<String>): LayoutDocument {
+    if (!autoPruneUninstalled) return this
+    val stale = sections.flatMap { it.items }.filter { it.packageName !in installedPackages }
+    if (stale.isEmpty()) return this
+    return stale.fold(this) { document, item -> document.removeItem(item.id) }
+}
+
 fun LayoutDocument.updateTheme(transform: (ThemeTokens) -> ThemeTokens): LayoutDocument =
     copy(theme = transform(theme))
 
@@ -2802,7 +2819,7 @@ git commit -m "feat(store): add document store, repository and DataStore adapter
 - Consumes: Task 2's `InstalledApp`, Task 4's `AppCatalog`.
 - Produces:
   - `class AppListProvider(query: () -> List<InstalledApp>)` with `fun load(): List<InstalledApp>` — pure, no Android types, so the fallback is JVM-testable
-  - `class InstalledAppsRepository(context: Context)` with `fun loadInstalledApps(): List<InstalledApp>`
+  - `class InstalledAppsRepository(context: Context)` with `fun loadInstalledApps(): List<InstalledApp>` and `fun lastLoadWasFallback(): Boolean`
   - `class IconCache(loadIcon: (String) -> ImageBitmap?, sizePx: Int)` with `fun icon(packageName: String): ImageBitmap?` and `companion object { fun forPackageManager(packageManager: PackageManager, sizePx: Int): IconCache }`
   - `class AppContainer(context: Context)` with `val repository: LayoutRepository`, `val appsRepository: InstalledAppsRepository`, `val iconCache: IconCache`
   - `class LinerApp : Application` with `val container: AppContainer`
@@ -3033,10 +3050,22 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
     @Volatile
     private var lastSuccessful: List<InstalledApp> = emptyList()
 
+    /**
+     * True when the most recent [load] fell back to the remembered
+     * list rather than returning a fresh query. The fallback covers a failed
+     * query and one that came back empty because the OS filtered the package
+     * visibility. Neither is evidence that the apps were uninstalled, so a
+     * fallback list must never be used to decide that an app is gone.
+     */
+    @Volatile
+    var lastLoadWasFallback: Boolean = false
+        private set
+
     fun load(): List<InstalledApp> = try {
         val apps = query()
         if (apps.isNotEmpty()) {
             lastSuccessful = apps
+            lastLoadWasFallback = false
             apps
         } else {
             // An empty result is not a successful result: some OEMs surface
@@ -3045,12 +3074,14 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
             // cache. A device always has at least one launchable activity —
             // its own launcher — so an empty list means the query was
             // filtered, and the remembered list stands in for it.
+            lastLoadWasFallback = true
             apps.ifEmpty { lastSuccessful }
         }
     } catch (_: Exception) {
         // Exception, not Throwable, to match the icon path: a bug or an
         // OutOfMemoryError must surface rather than being swallowed into a
         // silent fallback.
+        lastLoadWasFallback = true
         lastSuccessful
     }
 }
@@ -3070,6 +3101,13 @@ class InstalledAppsRepository(context: Context) {
     private val provider = AppListProvider { queryInstalledApps() }
 
     fun loadInstalledApps(): List<InstalledApp> = provider.load()
+
+    /**
+     * True when the most recent [loadInstalledApps] fell back to the
+     * remembered list instead of returning a fresh query. A fallback list
+     * must never be used to decide that an app has been uninstalled.
+     */
+    fun lastLoadWasFallback(): Boolean = provider.lastLoadWasFallback
 
     private fun queryInstalledApps(): List<InstalledApp> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -4089,7 +4127,16 @@ class HomeViewModel(
     fun refreshApps() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                _installedApps.value = appsRepository.loadInstalledApps()
+                val apps = appsRepository.loadInstalledApps()
+                _installedApps.value = apps
+                // Auto-pruning removes home entries whose app is gone — but
+                // only from a query that really answered. A failed or
+                // filtered query must never be read as "every app was
+                // uninstalled", or the whole home screen would be deleted.
+                if (!appsRepository.lastLoadWasFallback()) {
+                    val installed = apps.mapTo(HashSet()) { it.packageName }
+                    repository.update { doc -> doc.pruneUninstalledApps(installed) }
+                }
             } finally {
                 // Even a failed query means "we have looked" — without this
                 // the UI would wait forever before showing its states.
