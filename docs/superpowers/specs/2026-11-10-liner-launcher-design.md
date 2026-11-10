@@ -298,6 +298,10 @@ A full-screen sheet listing every launchable app on the device.
   4 columns, adapting down to 3 on narrow screens, icon size 48dp with the
   label beneath at 12sp. `drawerStyle = text` switches it to a single-column
   text list at 18sp, for consistency with home.
+- The sheet uses the same background as the home screen, with a scrim over it
+  so the list stays legible, and the app's own label (not the home rename) —
+  the drawer lists the real apps, the home screen is the personalised one.
+  Back closes it.
 - Tapping an app launches it and dismisses the drawer.
 - The drawer's own Settings entry is always present at the bottom.
 

@@ -3918,10 +3918,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -3936,6 +3938,8 @@ import dev.liner.launcher.ui.common.BackgroundLayer
 import dev.liner.launcher.ui.common.LabelRow
 import dev.liner.launcher.ui.common.SectionHeaderRow
 import java.time.ZoneId
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun HomeScreen(
@@ -4381,21 +4385,26 @@ class DrawerViewModel(
 ```kotlin
 package dev.liner.launcher.ui.drawer
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -4405,13 +4414,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.liner.launcher.apps.IconCache
+import dev.liner.launcher.model.BackgroundSpec
 import dev.liner.launcher.model.InstalledApp
+import dev.liner.launcher.ui.common.BackgroundLayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -4421,21 +4433,41 @@ fun DrawerSheet(
     query: String,
     style: String,
     iconCache: IconCache,
+    background: BackgroundSpec,
+    wallpaper: Bitmap?,
+    appsLoaded: Boolean,
+    systemTextColor: Color,
+    systemBackgroundColor: Color,
     onQueryChange: (String) -> Unit,
     onLaunch: (InstalledApp) -> Unit,
     onOpenSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    Box(
-        Modifier
-            .fillMaxSize()
-            .clickable(onClick = onDismiss),
-    ) {
+    // The sheet covers the whole screen, so there is no "outside" to tap —
+    // Back is what closes it.
+    BackHandler(onBack = onDismiss)
+
+    Box(Modifier.fillMaxSize()) {
+        // The drawer shares the home screen's background so a themed launcher
+        // stays coherent, with a scrim over it so the list stays legible on a
+        // wallpaper or a bright gradient.
+        BackgroundLayer(
+            spec = background,
+            wallpaper = wallpaper,
+            systemTextColor = systemTextColor,
+            systemBackgroundColor = systemBackgroundColor,
+        )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.45f)),
+        )
+
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(16.dp)
-                .clickable(enabled = false) {},
+                .safeDrawingPadding(),
         ) {
             OutlinedTextField(
                 value = query,
@@ -4445,7 +4477,15 @@ fun DrawerSheet(
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            if (visibleApps.isEmpty()) {
+            // The list takes the space the filter field and the settings row
+            // leave; without the weight it would fill the column and push
+            // the settings row out of view.
+            Box(Modifier.weight(1f)) {
+            if (!appsLoaded) {
+                // The app query has not finished yet — an empty list here
+                // means "not loaded", not "no apps match".
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {}
+            } else if (visibleApps.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("No apps match", fontSize = 16.sp)
                 }
@@ -4463,7 +4503,10 @@ fun DrawerSheet(
                     }
                 }
             } else {
-                LazyVerticalGrid(columns = GridCells.Fixed(4)) {
+                // Four columns, adapting down to three on a narrow screen.
+                BoxWithConstraints {
+                val columns = if (maxWidth < 360.dp) 3 else 4
+                LazyVerticalGrid(columns = GridCells.Fixed(columns)) {
                     items(visibleApps, key = { it.packageName + it.activityClass }) { app ->
                         Column(
                             Modifier
@@ -4484,9 +4527,11 @@ fun DrawerSheet(
                                     iconCache.icon(app.packageName)
                                 }
                             }
-                            if (icon != null) {
+                            // A `by` delegate cannot be smart-cast, so the
+                            // null case is handled with `let`.
+                            icon?.let { bitmap ->
                                 Image(
-                                    bitmap = icon,
+                                    bitmap = bitmap,
                                     contentDescription = null,
                                     contentScale = ContentScale.Fit,
                                     modifier = Modifier.size(48.dp),
@@ -4502,6 +4547,8 @@ fun DrawerSheet(
                         }
                     }
                 }
+                }
+            }
             }
 
             Row(
@@ -4510,7 +4557,7 @@ fun DrawerSheet(
             ) {
                 IconButton(onClick = onOpenSettings) {
                     Icon(
-                        androidx.compose.material.icons.Icons.Default.Settings,
+                        androidx.compose.material.icons.filled.Settings,
                         contentDescription = "Settings",
                     )
                 }
@@ -4531,7 +4578,13 @@ In `HomeScreen.kt`, add drawer state and a bottom gesture zone:
 ```kotlin
     var drawerOpen by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
     val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
-    val drawerViewModel = androidx.compose.runtime.remember { DrawerViewModel(viewModel.document, viewModel.installedApps) }
+    val appsLoaded by viewModel.appsLoaded.collectAsStateWithLifecycle()
+    // The view model belongs to the store, so it survives a configuration
+    // change and is cleared with the screen — `remember` would leak its
+    // scope.
+    val drawerViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+        factory = DrawerViewModel.factory(viewModel.document, viewModel.installedApps),
+    )
     val visibleApps by drawerViewModel.visibleApps.collectAsStateWithLifecycle()
     val query by drawerViewModel.query.collectAsStateWithLifecycle()
 ```
@@ -4545,6 +4598,11 @@ Add at the end of the root `Box`:
                 query = query,
                 style = theme.drawerStyle,
                 iconCache = iconCache,
+                background = theme.background,
+                wallpaper = wallpaper,
+                appsLoaded = appsLoaded,
+                systemTextColor = systemTextColor,
+                systemBackgroundColor = systemBackgroundColor,
                 onQueryChange = drawerViewModel::setQuery,
                 onLaunch = { app -> drawerOpen = false; onLaunchApp(app) },
                 onOpenSettings = { drawerOpen = false; onOpenSettings("appearance") },
