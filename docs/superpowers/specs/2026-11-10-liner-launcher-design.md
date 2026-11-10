@@ -206,9 +206,11 @@ likely to be got wrong:
   is clamped to the valid range; an unknown `toSectionId` is a no-op.
 - **`reorderHomeItems`** takes the desired flat order of home item ids and
   reorders items *within their existing sections* to match it. It never
-  moves an item between sections — that is `moveItem`'s job. This is how the
-  Settings → Apps tab reorders: it presents the home items flattened
-  across sections, and a reorder there produces a new flat order.
+  moves an item between sections — that is `moveItem`'s job. It is a model
+  operation, but the Settings → Apps tab does **not** use it: that tab
+  reorders with the same affordance as the home screen — the home items are
+  listed grouped by section, and a drag that crosses a section boundary moves
+  the item there with `moveItem`.
 
 The caller supplies the UUID for `addSection` and `addItem`, keeping `model`
 free of nondeterministic generation and therefore deterministic under test.

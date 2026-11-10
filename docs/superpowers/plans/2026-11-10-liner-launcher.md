@@ -3643,7 +3643,6 @@ git commit -m "feat(platform): add app launching, default-home detection, wallpa
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/home/{HomeScreen,HomeViewModel}.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/{LabelRow,SectionHeaderRow}.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/BackgroundLayer.kt`
-- Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/DragIndicator.kt`
 - Create: `app/src/test/kotlin/dev/liner/launcher/ui/common/GradientEndpointsTest.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/platform/LauncherActivity.kt`
 
@@ -4899,9 +4898,9 @@ git commit -m "feat(ui): add the app drawer with filter, grid and text modes"
 **Files:**
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/home/EditModeController.kt`
 - Test: `app/src/test/kotlin/dev/liner/launcher/ui/home/EditModeControllerTest.kt`
-- Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/DragIndicator.kt` (the shared insertion-indicator geometry — it is `internal`, so the settings Apps tab's reorder list needs it in a package it can reach)
 - Test: `app/src/test/kotlin/dev/liner/launcher/ui/common/DragIndicatorTest.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/EditSheets.kt`
+- Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/DragIndicator.kt` — the shared insertion-indicator geometry, used by the home screen's drag and by the settings Apps tab's reorder list
 - Modify: `app/src/main/kotlin/dev/liner/launcher/ui/home/HomeScreen.kt`
 - Test: `app/src/test/kotlin/dev/liner/launcher/model/DragTargetingTest.kt` (already covers the maths)
 
@@ -6866,13 +6865,59 @@ Tapping a section row opens the existing `SectionEditorSheet`
 confirmation Task 11 added — asks before deleting it and its items. Use it
 rather than a second editor.
 
-- [ ] **Step 6: Build and verify**
+- [ ] **Step 6: Close the gaps the review found**
+
+**6.1 Unchecking an app must not throw away its customisation.** `toggleHome`
+builds a brand-new `HomeItem(id = UUID…, packageName = …)` with no label and no
+style, and appends it to the *first* section. So unchecking an app and
+checking it again drops the rename the user set, drops the per-item style,
+and moves the app out of its section — with no undo and no message.
+
+Keep the removed item and put it back: when the app is unchecked, remember
+the `HomeItem` and the section it was in; when it is checked again, re-add
+**that** item with `addItem(item, itsSectionId, index)` rather than minting a
+new one. If the app was not on the home screen before, add a fresh item to the
+first section as the tab does now.
+
+**6.2 Unchecking must remove every copy of the app.** `toggleHome` removes
+only the first item with that package. If an app sits on the home screen in
+two sections (possible through an imported document), unchecking removes one
+copy, the checkbox recomputes straight back to *checked*, and the app stays on
+the home screen — the control appears to do nothing. Remove every item with
+that package, and derive the checked state from the same "any item with this
+package" rule.
+
+**6.3 The section chooser must be scrollable.** `SectionChooserSheet` lists
+every other section as a `TextButton` inside the `AlertDialog`'s `text` slot,
+which Material 3 does not scroll. With more sections than fit on screen the
+lower ones are unreachable — and the chooser is the only way to move an item
+between sections. Cap the list's height and give it
+`Modifier.verticalScroll(rememberScrollState())`. `ItemEditorSheet` has the
+same shape, so fix it there too.
+
+**6.4 The Apps tab must be able to say "still loading".** `SettingsViewModel`
+exposes no `appsLoaded` flag, so between opening the tab and the package
+manager answering, the "All apps" list is empty with no indication that it
+is still loading. The drawer and the home screen both have this flag. Mirror
+it: a private `MutableStateFlow<Boolean>` set in a `finally` after the query
+(so a failed query still marks "we have looked"), exposed as
+`val appsLoaded: StateFlow<Boolean>`. `SettingsActivity` collects it and
+passes it down; the Apps tab shows a "Loading…" line while it is false.
+
+**6.5 Delete the code this task made unreachable.** `homeOrderWithMovedItem`
+(`model/HomeOrder.kt`) has no production caller since the reorder moved to
+`moveItem`, and `HomeEntry.sectionTitle` is written by `AppCatalog.homeEntries`
+but read by nobody. Delete `model/HomeOrder.kt`, its test file, and the
+`sectionTitle` field (and its constructor argument at every call site).
+`reorderHomeItems` stays — it is a tested model operation.
+
+- [ ] **Step 7: Build and verify**
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:assembleDebug :app:testDebugUnitTest`
 
 Expected: `BUILD SUCCESSFUL`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add app/src/main/kotlin/dev/liner/launcher/ui/settings app/src/test/kotlin/dev/liner/launcher/model
