@@ -61,6 +61,7 @@ per shell as:
 GRADLE_BIN=/workspace/.toolchain/gradle-8.11.1/bin/gradle
 GRADLE_ARGS=(
   --no-parallel
+  --no-watch-fs
   -Pkotlin.compiler.execution.strategy=in-process
   "-Dorg.gradle.jvmargs=-Xmx1280m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
 )
@@ -74,6 +75,11 @@ correct for a developer's machine and only the sandbox needs the override.
 A cold build takes roughly 15 minutes here and the foreground tool timeout is
 600 s. Run the first build in the background and poll it. Incremental builds
 after that are fast.
+
+`--no-watch-fs` is required: this sandbox's Gradle daemon does not notice
+file edits, so without it a build can report "up to date" for code that has
+just changed. The flag costs nothing and removes a whole class of confusing
+"my change did nothing" failures.
 
 `local.properties` must contain `sdk.dir=/workspace/.toolchain/android-sdk`. It is gitignored; `local.properties.example` is committed.
 
@@ -3297,18 +3303,18 @@ import android.graphics.drawable.Drawable
 
 object WallpaperProvider {
     /** Returns the system wallpaper, or null when it cannot be read. Never throws. */
-    fun load(context: Context): Drawable? {
+    fun load(context: Context): Drawable? = try {
         val manager = WallpaperManager.getInstance(context)
         // A null result means "no wallpaper set" — the system wallpaper may
         // still be there, so try the system flag before giving up.
-        return try {
-            manager.getDrawable() ?: manager.getDrawable(WallpaperManager.FLAG_SYSTEM)
+        manager.getDrawable() ?: manager.getDrawable(WallpaperManager.FLAG_SYSTEM)
+    } catch (_: Throwable) {
+        // The wallpaper service can be unavailable; the caller falls back to
+        // a plain background rather than the launcher failing to start.
+        try {
+            WallpaperManager.getInstance(context).getDrawable(WallpaperManager.FLAG_SYSTEM)
         } catch (_: Throwable) {
-            try {
-                manager.getDrawable(WallpaperManager.FLAG_SYSTEM)
-            } catch (_: Throwable) {
-                null
-            }
+            null
         }
     }
 }
