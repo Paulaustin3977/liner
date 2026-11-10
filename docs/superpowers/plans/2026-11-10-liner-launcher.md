@@ -728,7 +728,7 @@ git commit -m "chore: scaffold buildable Android project"
 **Interfaces:**
 - Consumes: Task 1's Gradle setup (serialization plugin already applied).
 - Produces:
-  - `data class LayoutDocument(version: Int = 1, sections: List<Section> = emptyList(), theme: ThemeTokens = ThemeTokens(), hiddenFromDrawer: List<String> = emptyList(), autoPruneUninstalled: Boolean = false)`
+  - `data class LayoutDocument(version: Int = 1, sections: List<Section> = emptyList(), theme: ThemeTokens = ThemeTokens(), hiddenFromDrawer: List<String> = emptyList(), autoPruneUninstalled: Boolean = false, firstRunPromptDismissed: Boolean = false)`
   - `data class Section(id: String, title: String? = null, items: List<HomeItem> = emptyList())`
   - `data class HomeItem(id: String, packageName: String, label: String? = null, style: ItemStyle? = null)`
   - `data class ItemStyle(textSizeSp: Float? = null, color: ColorSpec? = null, fontWeight: String? = null, letterSpacingEm: Float? = null)`
@@ -914,6 +914,15 @@ data class LayoutDocument(
     val theme: ThemeTokens = ThemeTokens(),
     val hiddenFromDrawer: List<String> = emptyList(),
     val autoPruneUninstalled: Boolean = false,
+    /**
+     * Whether the user has dismissed the first-run prompt. The prompt is
+     * shown once, on the first launch, when Liner is not the default home
+     * app — and it stays dismissed afterwards.
+     *
+     * It lives in the document rather than in a second store because the app
+     * keeps no hidden state: everything the user can see is in the document.
+     */
+    val firstRunPromptDismissed: Boolean = false,
 ) {
     companion object {
         const val CURRENT_VERSION = 1
@@ -1496,6 +1505,13 @@ fun LayoutDocument.setHiddenFromDrawer(packageName: String, hidden: Boolean): La
 
 fun LayoutDocument.setAutoPruneUninstalled(enabled: Boolean): LayoutDocument =
     copy(autoPruneUninstalled = enabled)
+
+/**
+ * Records that the user has dismissed the first-run prompt, so it does not
+ * come back.
+ */
+fun LayoutDocument.dismissFirstRunPrompt(): LayoutDocument =
+    copy(firstRunPromptDismissed = true)
 
 /**
  * Removes every home item whose package is not in [installedPackages].
@@ -7912,7 +7928,109 @@ git commit -m "test: add instrumentation test sources and the manual test script
 - Consumes: the complete app.
 - Produces: `dist/liner-debug.apk`, `dist/liner-release.apk`, `dist/liner-source.zip`, `README.md`.
 
-- [ ] **Step 1: Generate the release keystore and harden the signing config**
+- [ ] **Step 1: Show the first-run prompt**
+
+The spec's §6.4 is a first-run prompt, not the Advanced tab's banner:
+
+> On first launch, if Liner is not the default home app, show a one-time
+> prompt with a button that fires `Intent(Settings.ACTION_HOME_SETTINGS)`.
+> Dismissible. The prompt does not reappear once Liner is the default home.
+
+The Advanced tab's banner tells a user who already opened Settings that
+Liner is not their default launcher. The first-run prompt is what a user
+sees the first time they open Liner, and it goes away for good once they
+dismiss it.
+
+**The state lives in the document** — the app keeps no hidden state, so a
+second store would be wrong:
+
+```kotlin
+@Serializable
+data class LayoutDocument(
+    ...
+    /**
+     * Whether the user has dismissed the first-run prompt. The prompt is
+     * shown once, on the first launch, when Liner is not the default home
+     * app — and it stays dismissed afterwards.
+     *
+     * It lives in the document rather than in a second store because the app
+     * keeps no hidden state: everything the user can see is in the document.
+     */
+    val firstRunPromptDismissed: Boolean = false,
+)
+```
+
+and `DocumentEdits.kt` gains:
+
+```kotlin
+/**
+ * Records that the user has dismissed the first-run prompt, so it does not
+ * come back.
+ */
+fun LayoutDocument.dismissFirstRunPrompt(): LayoutDocument =
+    copy(firstRunPromptDismissed = true)
+```
+
+**The prompt itself** goes on the home screen, under the clock. It is shown
+when all three hold: the document has been read, the user has not dismissed
+it, and Liner is genuinely not the default home app.
+
+The default-home check is a binder round trip, so it must NOT run in the
+composition — resolve it in a `LaunchedEffect` on `Dispatchers.IO` and start
+from an *unknown* state, exactly as the Advanced tab does:
+
+```kotlin
+// null means "not known yet"
+var isDefaultHome by remember { mutableStateOf<Boolean?>(null) }
+LaunchedEffect(Unit) {
+    isDefaultHome = withContext(Dispatchers.IO) {
+        DefaultHomeDetector.isDefaultHome(context)
+    }
+}
+```
+
+The prompt is a card with a *"Set as default"* button and a dismiss button:
+
+```kotlin
+if (showFirstRunPrompt) {
+    Card(Modifier.fillMaxWidth().padding(16.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Set Liner as your home app", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Liner is not your default launcher yet. Choose it to use it as your home screen.",
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Row(Modifier.padding(top = 8.dp)) {
+                TextButton(onClick = { DefaultHomeDetector.requestDefaultHome(context) }) {
+                    Text("Set as default")
+                }
+                TextButton(onClick = { viewModel.update { it.dismissFirstRunPrompt() } }) {
+                    Text("Not now")
+                }
+            }
+        }
+    }
+}
+```
+
+`DefaultHomeDetector.requestDefaultHome` fires the HOME role request on API
+29+ and `Settings.ACTION_HOME_SETTINGS` below it, so the button is the right
+one on every version.
+
+**The prompt must not reappear once Liner IS the default home app**, so the
+condition is `isDefaultHome == false` — not merely "not dismissed".
+
+Add a unit test for the edit operation, and pin the condition itself in an
+`internal` helper so it can be tested without a device:
+
+```kotlin
+internal fun shouldShowFirstRunPrompt(
+    dismissed: Boolean,
+    isDefaultHome: Boolean?,
+): Boolean = !dismissed && isDefaultHome == false
+```
+
+- [ ] **Step 2: Generate the release keystore and harden the signing config**
 
 ```bash
 cd /workspace
@@ -7954,7 +8072,7 @@ each missing key produces a clear message:
     }
 ```
 
-- [ ] **Step 1b: Generate the Gradle wrapper**
+- [ ] **Step 3: Generate the Gradle wrapper**
 
 The README tells users to run `./gradlew`, so the wrapper must ship with the
 source:
@@ -7971,7 +8089,7 @@ access on first build — that is the normal Gradle wrapper behaviour.
 
 Commit the wrapper files; they are part of the deliverable.
 
-- [ ] **Step 2: Build both APKs**
+- [ ] **Step 4: Build both APKs**
 
 ```bash
 cd /workspace
@@ -7981,7 +8099,7 @@ export ANDROID_HOME=/workspace/.toolchain/android-sdk GRADLE_USER_HOME=/workspac
 
 Expected: `BUILD SUCCESSFUL`, all unit tests green.
 
-- [ ] **Step 3: Verify the signatures**
+- [ ] **Step 5: Verify the signatures**
 
 ```bash
 cd /workspace
@@ -7993,7 +8111,7 @@ $ANDROID_HOME/build-tools/35.0.0/apksigner verify --print-certs \
 
 Expected: `Verifies` for both, with the release certificate shown for the release APK.
 
-- [ ] **Step 4: Copy the artifacts and package the source**
+- [ ] **Step 6: Copy the artifacts and package the source**
 
 ```bash
 cd /workspace
@@ -8004,7 +8122,7 @@ zip -r dist/liner-source.zip . \
   'dist/*' '*.apk' '*.jks' 'keystore.properties' 'local.properties'
 ```
 
-- [ ] **Step 5: Write the README**
+- [ ] **Step 7: Write the README**
 
 `README.md`:
 
