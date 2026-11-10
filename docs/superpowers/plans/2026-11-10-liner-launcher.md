@@ -1248,6 +1248,28 @@ class DocumentEditsTest {
     }
 
     @Test
+    fun `reorderHomeItems keeps unlisted items in their previous relative order`() {
+        // Ids are deliberately in reverse alphabetical order so that sorting by
+        // id and sorting by previous position give different answers.
+        val document = LayoutDocument(
+            sections = listOf(
+                Section(
+                    id = "s1",
+                    items = listOf(
+                        HomeItem(id = "z", packageName = "p.z"),
+                        HomeItem(id = "y", packageName = "p.y"),
+                        HomeItem(id = "x", packageName = "p.x"),
+                    ),
+                ),
+            ),
+        )
+
+        val result = document.reorderHomeItems(listOf("z"))
+
+        assertEquals(listOf("z", "y", "x"), result.sections[0].items.map { it.id })
+    }
+
+    @Test
     fun `reorderHomeItems ignores ids that are not on the home screen`() {
         val result = doc().reorderHomeItems(listOf("c", "b", "a", "unknown"))
 
@@ -1383,17 +1405,19 @@ fun LayoutDocument.addItem(item: HomeItem, sectionId: String, index: Int = Int.M
 /**
  * Applies a desired flat order of home item ids. Items keep their section,
  * but their order inside that section follows [flatOrder]. Ids not present in
- * [flatOrder] keep their relative position at the end of their section.
+ * [flatOrder] keep their previous relative position at the end of their
+ * section — the tiebreaker is the item's previous index, not its id.
  */
 fun LayoutDocument.reorderHomeItems(flatOrder: List<String>): LayoutDocument {
     if (flatOrder.isEmpty()) return this
     val position = flatOrder.withIndex().associate { (index, id) -> id to index }
 
     return copy(sections = sections.map { s ->
+        val previousIndex = s.items.withIndex().associate { (index, item) -> item.id to index }
         val ordered = s.items.sortedWith(
             compareBy(
                 { position[it.id] ?: Int.MAX_VALUE },
-                { it.id },
+                { previousIndex[it.id] ?: Int.MAX_VALUE },
             ),
         )
         s.copy(items = ordered)
@@ -1445,7 +1469,7 @@ fun LayoutDocument.sectionById(sectionId: String): Section? =
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*DocumentEditsTest*'`
 
-Expected: `BUILD SUCCESSFUL`, 22 tests, 0 failures.
+Expected: `BUILD SUCCESSFUL`, 24 tests, 0 failures.
 
 - [ ] **Step 5: Commit**
 
