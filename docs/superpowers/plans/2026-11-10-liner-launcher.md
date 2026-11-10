@@ -2753,12 +2753,18 @@ class InstalledAppsRepository(context: Context) {
         return packageManager.queryIntentActivities(intent, 0)
             .mapNotNull { resolved ->
                 val info = resolved.activityInfo ?: return@mapNotNull null
+                // A label that is null, or that throws because the package was
+                // uninstalled between the query and the load, must cost only
+                // that one app — not the whole query.
+                val label = try {
+                    resolved.loadLabel(packageManager)?.toString()
+                } catch (_: Exception) {
+                    null
+                }
                 InstalledApp(
                     packageName = info.packageName,
                     activityClass = info.name,
-                    // A null label must not abort the whole query — fall back
-                    // to the package name for that one app.
-                    systemLabel = resolved.loadLabel(packageManager)?.toString() ?: info.packageName,
+                    systemLabel = label ?: info.packageName,
                 )
             }
             // One entry per app: an app with two MAIN/LAUNCHER activities must
@@ -2815,15 +2821,19 @@ class IconCache(
 
         val bitmap = try {
             packageManager.getApplicationIcon(packageName).toImageBitmap()
-        } catch (_: Throwable) {
+        } catch (_: PackageManager.NameNotFoundException) {
+            // The package is genuinely gone. Remember that, so the tile stops
+            // asking for an icon that will never load.
+            unavailable += packageName
+            null
+        } catch (_: Exception) {
+            // A transient failure — deliberately NOT remembered, so the next
+            // attempt retries rather than leaving the tile iconless for the
+            // rest of the session. Errors are deliberately not caught here.
             null
         }
 
-        if (bitmap != null) {
-            cache.put(key, bitmap)
-        } else {
-            unavailable += packageName
-        }
+        if (bitmap != null) cache.put(key, bitmap)
         return bitmap
     }
 
