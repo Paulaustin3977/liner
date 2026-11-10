@@ -2806,9 +2806,10 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
 /**
  * Reads the launchable apps installed on the device.
  *
- * Never throws. A failed query falls back to the last successful list rather
- * than showing the user an empty drawer — the launcher must keep working
- * when the package manager is briefly unavailable.
+ * Never throws for a data failure: a failed query falls back to the last
+ * successful list rather than showing the user an empty drawer — the
+ * launcher must keep working when the package manager is briefly
+ * unavailable. Errors are deliberately not swallowed.
  */
 class InstalledAppsRepository(context: Context) {
 
@@ -2867,7 +2868,8 @@ import androidx.compose.ui.graphics.asImageBitmap
  * The bitmap keeps the drawable's intrinsic resolution, falling back to
  * [sizePx] only when the drawable reports no size of its own — that keeps
  * adaptive icons crisp when the UI scales them down. A failed load returns
- * null rather than throwing, so the caller can render the app label instead.
+ * null rather than throwing, so the caller can render the app label instead;
+ * errors are deliberately not swallowed.
  *
  * The loader is injected rather than taken as a PackageManager, so the
  * caching and stickiness policy can be tested on the JVM without a device.
