@@ -3424,7 +3424,7 @@ git commit -m "feat(platform): add app launching, default-home detection, wallpa
 **Interfaces:**
 - Consumes: Task 4's `AppCatalog`/`StyleResolver`/`ClockFormatter`, Task 6's `LayoutRepository`, Task 8's `LinerTheme`.
 - Produces:
-  - `class HomeViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val homeEntries: StateFlow<List<HomeEntry>>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
+  - `class HomeViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val homeEntries: StateFlow<List<HomeEntry>>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `val appsLoaded: StateFlow<Boolean>`, `val documentLoaded: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
   - `@Composable fun HomeScreen(viewModel: HomeViewModel, wallpaper: Bitmap?, iconCache: IconCache, onLaunch: (HomeEntry) -> Unit, onOpenSettings: (String?) -> Unit, onRecoverLayout: (String) -> Unit)`
   - `@Composable fun BackgroundLayer(spec: BackgroundSpec, wallpaper: Bitmap?, systemTextColor: Color, systemBackgroundColor: Color)`
   - `@Composable fun LabelRow(text: String, style: ResolvedStyle, alignment: Alignment.Horizontal, icon: ImageBitmap?, iconSizeDp: Int, enabled: Boolean)`
