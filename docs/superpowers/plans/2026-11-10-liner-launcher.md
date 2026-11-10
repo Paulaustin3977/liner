@@ -28,6 +28,15 @@ Every task below implicitly includes these. Values are copied verbatim from the 
 - Layout document is persisted as one JSON blob in DataStore Preferences, key `layout_document`.
 - The launcher declares `QUERY_ALL_PACKAGES` under the standard launcher (CATEGORY_HOME) exemption.
 - Every write to persistent storage happens through `LayoutRepository`, which is the only component that touches `DocumentStore`.
+- The `ui` layer owns three things `model` deliberately cannot:
+  - Substituting the real text colour when `ResolvedStyle.colorArgb` is null (the
+    "follow system" sentinel), using the current light/dark configuration.
+  - Mapping `ThemeTokens.clockFormat == "system"` to
+    `DateFormat.is24HourFormat(context)` before calling `ClockFormatter.formatTime`.
+  - Feeding the drawer `AppCatalog.drawerApps(...)` output into `AppFilter.filter(...)`,
+    because `AppFilter` preserves input order — filtering an unsorted list would
+    lose the alphabetical ordering.
+- The `ui` layer never reads raw theme tokens; it consumes `StyleResolver` output only.
 - **Only `material-icons-core` is available** — not `material-icons-extended`. The full extended set adds ~37 MB to the APK for icons this app never uses. Use a core icon (`Icons.Default.Settings` is in core) or a text label instead.
 - No crashes on: missing app, failed icon load, failed DataStore write, corrupt JSON, `PackageManager` throwing.
 - Unit tests live in `app/src/test/kotlin/dev/liner/launcher/` and must run headless via `gradle test`.
