@@ -301,7 +301,9 @@ A full-screen sheet listing every launchable app on the device.
 - The sheet uses the same background as the home screen, with a scrim over it
   so the list stays legible, and the app's own label (not the home rename) —
   the drawer lists the real apps, the home screen is the personalised one.
-  Back closes it.
+  The scrim leans towards the theme's background colour rather than always
+  towards black, so the theme's text colour stays readable over a wallpaper
+  in both light and dark mode. Back closes it.
 - Tapping an app launches it and dismisses the drawer.
 - The drawer's own Settings entry is always present at the bottom.
 
