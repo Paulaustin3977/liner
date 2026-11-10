@@ -2526,7 +2526,7 @@ class DataStoreDocumentStore(context: Context) : DocumentStore {
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*LayoutRepositoryTest*'`
 
-Expected: `BUILD SUCCESSFUL`, 10 tests, 0 failures.
+Expected: `BUILD SUCCESSFUL`, 13 tests, 0 failures.
 
 - [ ] **Step 7: Commit**
 
@@ -2614,7 +2614,14 @@ class AppCatalogIntegrationTest {
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*AppCatalogIntegrationTest*'`
 
-Expected: compilation failure — `Unresolved reference: InstalledAppsRepository` is *not* expected here, but the test file references `AppCatalog` which does exist. **If this test passes immediately, that is fine and expected** — it exercises Task 4 code. The genuinely new work in this task is the Android adapter, which has no JVM test. Change Step 2's expectation to: the test passes immediately (2 tests, 0 failures), confirming the catalog contract that the adapter depends on.
+Expected: **the test passes immediately** (2 tests, 0 failures). This is a contract
+test, not a RED-phase test: it exercises `AppCatalog`, which Task 4 already
+built and tested, and pins the contract the Android adapter in this task
+depends on. The genuinely new code in this task is the Android adapter
+(`InstalledAppsRepository`, `IconCache`), which needs a device to exercise —
+there is no honest RED phase for it on the JVM, and inventing one would be
+theatre rather than verification. The adapter is verified by compiling and
+by the instrumentation tests in Task 15.
 
 - [ ] **Step 3: Implement the installed apps repository**
 
