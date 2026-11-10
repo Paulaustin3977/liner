@@ -51,7 +51,7 @@ per shell as:
 ```bash
 GRADLE="/workspace/.toolchain/gradle-8.11.1/bin/gradle --no-parallel \
   -Pkotlin.compiler.execution.strategy=in-process \
-  -Dorg.gradle.jvmargs=-Xmx1280m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
+  '-Dorg.gradle.jvmargs=-Xmx1280m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8'"
 ```
 
 This override is **mandatory**. The committed `gradle.properties` asks for
@@ -987,6 +987,7 @@ data class InstalledApp(
 ```kotlin
 package dev.liner.launcher.model
 
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 object DocumentCodec {
@@ -1030,7 +1031,7 @@ Expected: `BUILD SUCCESSFUL`, 5 tests, 0 failures.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app/src/main/kotlin/dev/liner/launcher/model app/src/main/kotlin/dev/liner/launcher/store \
+git add app/src/main/kotlin/dev/liner/launcher/model \
         app/src/test/kotlin/dev/liner/launcher/model
 git commit -m "feat(model): add layout document types and JSON codec"
 ```
