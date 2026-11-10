@@ -2718,7 +2718,14 @@ class LayoutRepository(private val store: DocumentStore) {
             // Whether the read succeeded or failed, the document has been
             // dealt with: a failed read leaves the defaults in memory, and
             // the caller must know that too.
-            _documentLoaded.value = true
+            val queued = synchronized(lock) {
+                _documentLoaded.value = true
+                val pending = pendingTransforms.toList()
+                pendingTransforms.clear()
+                pending
+            }
+            // The queued edits now apply to the real document.
+            queued.forEach { applyTransform(it) }
         }
     }
 
@@ -2758,7 +2765,28 @@ class LayoutRepository(private val store: DocumentStore) {
      * rebuilds an equal document is still written. That keeps a no-op edit
      * (a prune that finds nothing stale, say) from rewriting the store.
      */
+    /**
+     * Transforms that arrived before the document was read. They are applied
+     * to the real document once it is in memory — applying them to the
+     * defaults would both lose the edit and, because the result is queued
+     * for writing, destroy the stored layout.
+     */
+    private val pendingTransforms = mutableListOf<(LayoutDocument) -> LayoutDocument>()
+
+    private val lock = Any()
+
     fun update(transform: (LayoutDocument) -> LayoutDocument) {
+        synchronized(lock) {
+            if (!_documentLoaded.value) {
+                // The store has not been read yet. Queue the transform.
+                pendingTransforms += transform
+                return
+            }
+        }
+        applyTransform(transform)
+    }
+
+    private fun applyTransform(transform: (LayoutDocument) -> LayoutDocument) {
         val current = _document.value
         val next = transform(current)
         // A transform that changed nothing must not queue a write: the store
