@@ -6059,10 +6059,21 @@ class SettingsViewModel(
     /** True when the last save failed; the screen turns it into a notice. */
     val writeFailed: StateFlow<Boolean> = repository.writeFailed
 
+    /**
+     * True when the stored layout could not be read. The settings activity is
+     * exported with CATEGORY_LAUNCHER, so it can be the process's first
+     * activity and the screen that performs the only load — it has to tell
+     * the user their layout was reset, the way the home screen does.
+     */
+    val loadFailed: StateFlow<Boolean> = repository.loadFailed
+
     private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
     val installedApps: StateFlow<List<InstalledApp>> = _installedApps
 
     init {
+        // The repository reads the store once per process, so this is a no-op
+        // when the home screen has already loaded it — and it must never
+        // clobber an edit that has not been written back yet.
         viewModelScope.launch { repository.load() }
         // The package manager query is not cheap, so it stays off the main
         // thread.
