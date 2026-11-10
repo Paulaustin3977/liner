@@ -50,6 +50,13 @@ Every task below implicitly includes these. Values are copied verbatim from the 
 - **The layout store is read once per process.** `LayoutRepository.load()` is
   idempotent: a second read would race the writer and could discard an edit
   that has not been persisted yet.
+- **Writes to the layout store are coalesced.** `LayoutRepository` funnels
+  updates through a conflated channel and waits for the burst to settle before
+  writing, so a gesture that fires an update per frame — a dragged slider —
+  rewrites the whole document once instead of once per frame. The in-memory
+  document still updates on every movement, so the live preview stays live.
+  A superseded write is dropped rather than persisted, so nothing may await a
+  *specific* write's deferred.
 - **Removing a single item from the home screen is always undoable.** The
   trash zone and the item editor's Remove button raise a snackbar with an
   Undo action that puts the item back where it was. Deleting a *section*
@@ -2210,6 +2217,7 @@ import dev.liner.launcher.model.DocumentCodec
 import dev.liner.launcher.model.LayoutDocument
 import dev.liner.launcher.model.Section
 import dev.liner.launcher.model.addSection
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -2356,6 +2364,21 @@ class LayoutRepositoryTest {
     }
 
     @Test
+    fun `a cancelled write is not reported as a write failure`() = runTest {
+        val store = object : DocumentStore {
+            override suspend fun read(): String? = null
+            override suspend fun write(json: String): Unit = throw CancellationException("cancelled")
+        }
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        repository.update { it.addSection("s1") }
+        repository.awaitPendingWrite()
+
+        assertFalse(repository.writeFailed.value)
+    }
+
+    @Test
     fun `an empty store clears a failure from an earlier failed read`() = runTest {
         val store = object : DocumentStore {
             var failRead = true
@@ -2405,13 +2428,70 @@ class LayoutRepositoryTest {
 
         gate.complete(Unit)
     }
+
+    @Test
+    fun `a burst of updates is persisted once, with the final state`() = runTest {
+        val store = CountingDocumentStore()
+        val repository = LayoutRepository(store)
+        repository.load()
+
+        // A warm-up update pays the class-loading cost, so the measured burst
+        // below is not slowed down by the first call on a cold JVM. It is
+        // superseded by the burst either way.
+        repository.update { it }
+
+        // Dragging a settings slider fires an update per frame. The store
+        // only ever needs the settled state of the gesture, so the burst has
+        // to collapse into a single write of the final document.
+        repeat(40) { index ->
+            repository.update { it.addSection("s$index") }
+        }
+
+        repository.awaitPendingWrite()
+
+        assertEquals(1, store.writeCount)
+
+        // The live preview still saw every movement: the in-memory document
+        // holds all of them, and the one write that did land holds them all
+        // too.
+        val expected = (0 until 40).map { "s$it" }
+        assertEquals(expected, repository.document.value.sections.map { it.id })
+        val decoded = store.lastWritten?.let(DocumentCodec::decode)
+        assertEquals(expected, decoded?.sections?.map { it.id })
+    }
+}
+
+/**
+ * A [DocumentStore] that counts the writes it receives, so a test can pin
+ * how many times the document was persisted.
+ */
+private class CountingDocumentStore : DocumentStore {
+
+    private val lock = Any()
+    private val written = mutableListOf<String>()
+
+    /** How many times the document was written. */
+    val writeCount: Int get() = synchronized(lock) { written.size }
+
+    /** The payload of the last write, or null if nothing was written. */
+    val lastWritten: String? get() = synchronized(lock) { written.lastOrNull() }
+
+    override suspend fun read(): String? = null
+
+    override suspend fun write(json: String) {
+        synchronized(lock) { written += json }
+    }
 }
 ```
 
 > `awaitPendingWrite()` is a test-visible suspend function that awaits the
-> most recent write. Because writes are consumed from a FIFO channel by a
-> single coroutine, awaiting the latest write also implies every earlier
-> write has completed. Add it to `LayoutRepository` as
+> most recent write. Because writes are consumed from a conflated channel by a
+> single coroutine, awaiting the latest write also implies the store holds the
+> latest document. It does **not** imply that every earlier write was
+> persisted: a write that is superseded while it waits is dropped, and its
+> deferred is never completed. Nothing may await a *specific* write's
+> deferred — only `latestWrite`, which always points at the newest one. Add it
+> to `LayoutRepository` as
 > `internal suspend fun awaitPendingWrite()`.
 >
 > `reload()` is a test-visible suspend function that re-reads the store,
@@ -2479,8 +2559,9 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Every mutation goes through [update], which updates the in-memory state
  * immediately and persists it asynchronously. Writes are funnelled through one
- * unbounded channel consumed by a single coroutine, so two rapid edits can
- * never land out of order.
+ * conflated channel consumed by a single coroutine, so two rapid edits can
+ * never land out of order — and a burst of edits (a dragged slider fires one
+ * per frame) collapses into a single write of the settled state.
  */
 class LayoutRepository(private val store: DocumentStore) {
 
@@ -2606,6 +2687,14 @@ class LayoutRepository(private val store: DocumentStore) {
         }
     }
 
+    /**
+     * Persists one document and reports whether it worked.
+     *
+     * A superseded write is never persisted at all — its [PendingWrite.done]
+     * is simply dropped, so nothing may await a *specific* write's deferred.
+     * [awaitPendingWrite] awaits the newest write, which is always the one
+     * that is (or will be) written.
+     */
     private suspend fun writeDocument(pending: PendingWrite) {
         try {
             store.write(DocumentCodec.encode(pending.document))
@@ -5413,6 +5502,7 @@ git commit -m "feat(ui): add edit mode with drag reorder, rename and remove"
     - `internal fun backgroundStyleLabel(background: BackgroundSpec): String` — the name of a background style
     - `internal fun applyBackgroundStyle(theme: ThemeTokens, style: String): ThemeTokens` — the theme after a style is picked
     - `internal fun ThemeTokens.withGradient(transform: (BackgroundSpec.Gradient) -> BackgroundSpec.Gradient): ThemeTokens` — applies a change to the current gradient, whatever the document holds at the time
+    - `internal val FONT_WEIGHTS: List<String>` — every font weight the spec's 100-900 range names; all nine are reachable from the picker
     - `internal fun formatSliderValue(value: Float): String` — how a slider value is written out
     - `internal fun isPaletteColorSelected(selected: ColorSpec, argb: Int): Boolean` — whether a swatch is the picked colour
 
@@ -5610,6 +5700,16 @@ import dev.liner.launcher.ui.common.ColorOptionRow
 import dev.liner.launcher.ui.common.SliderRow
 
 /**
+ * Every font weight the spec's 100-900 range names.
+ *
+ * The platform's `weightFor` maps all nine, and `StyleResolver` parses any
+ * numeric weight string, so every one of them is a real choice.
+ */
+internal val FONT_WEIGHTS = listOf(
+    "100", "200", "300", "400", "500", "600", "700", "800", "900",
+)
+
+/**
  * The appearance tab: every theme token the user can change.
  *
  * The tab writes the tokens straight into the document through
@@ -5705,7 +5805,7 @@ fun AppearanceTab(
             // Every weight the spec's 100-900 range names. The platform's
             // font weights are all reachable, and `StyleResolver` parses any
             // numeric weight string.
-            options = listOf("100", "200", "300", "400", "500", "600", "700", "800", "900"),
+            options = FONT_WEIGHTS,
             selected = theme.listFontWeight,
             onSelect = { weight -> onThemeChange { it.copy(listFontWeight = weight) } },
         )
@@ -5845,23 +5945,25 @@ internal fun backgroundStyleLabel(background: BackgroundSpec): String = when (ba
 }
 
 /**
+ * Applies [transform] to the theme's gradient, if it has one. A theme
+ * whose background is not a gradient is left alone — the gradient controls
+ * are only reachable when the background IS a gradient.
+ */
+internal fun ThemeTokens.withGradient(
+    transform: (BackgroundSpec.Gradient) -> BackgroundSpec.Gradient,
+): ThemeTokens {
+    val current = background
+    if (current !is BackgroundSpec.Gradient) return this
+    return copy(background = transform(current))
+}
+
+/**
  * The theme after the user picks a background style.
  *
  * Each style comes with its own starting colours, so picking one shows a
  * background the user can then adjust. An unknown style falls back to the
  * wallpaper rather than leaving the theme without a background.
  */
-/**
- * Applies [transform] to the theme's gradient, if it has one. A theme
- * whose background is not a gradient is left alone — the gradient controls
- * are only reachable when the background IS a gradient.
- */
-internal fun ThemeTokens.withGradient(transform: (BackgroundSpec.Gradient) -> BackgroundSpec.Gradient): ThemeTokens {
-    val current = background
-    if (current !is BackgroundSpec.Gradient) return this
-    return copy(background = transform(current))
-}
-
 internal fun applyBackgroundStyle(theme: ThemeTokens, style: String): ThemeTokens = when (style) {
     "solid" -> theme.copy(background = BackgroundSpec.Solid(ColorSpec.Solid(0xFF101014.toInt())))
     "gradient" -> theme.copy(
@@ -6194,6 +6296,7 @@ package dev.liner.launcher.ui.settings
 import dev.liner.launcher.model.BackgroundSpec
 import dev.liner.launcher.model.ColorSpec
 import dev.liner.launcher.model.ThemeTokens
+import dev.liner.launcher.platform.weightFor
 import dev.liner.launcher.ui.common.formatSliderValue
 import dev.liner.launcher.ui.common.isPaletteColorSelected
 import org.junit.Assert.assertEquals
@@ -6311,6 +6414,58 @@ class SettingsAppearanceTest {
     @Test
     fun `following the system selects no palette colour`() {
         assertFalse(isPaletteColorSelected(ColorSpec.FollowSystem, 0xFF000000.toInt()))
+    }
+
+    @Test
+    fun `a gradient change is applied to the background the theme holds now`() {
+        // The transform derives the background from the CURRENT document, so
+        // a change that landed in between is not undone by a stale copy.
+        val theme = ThemeTokens(
+            background = BackgroundSpec.Gradient(
+                from = ColorSpec.Solid(0xFF101014.toInt()),
+                to = ColorSpec.Solid(0xFF2A2A32.toInt()),
+                angleDegrees = 90,
+            ),
+        )
+
+        val result = theme.withGradient { it.copy(angleDegrees = 180) }
+
+        assertEquals(
+            BackgroundSpec.Gradient(
+                from = ColorSpec.Solid(0xFF101014.toInt()),
+                to = ColorSpec.Solid(0xFF2A2A32.toInt()),
+                angleDegrees = 180,
+            ),
+            result.background,
+        )
+    }
+
+    @Test
+    fun `a theme without a gradient is left alone by a gradient change`() {
+        val theme = ThemeTokens(background = BackgroundSpec.Solid(ColorSpec.FollowSystem))
+
+        assertEquals(theme, theme.withGradient { it.copy(angleDegrees = 180) })
+    }
+
+    @Test
+    fun `every weight the spec names is offered`() {
+        assertEquals(
+            listOf("100", "200", "300", "400", "500", "600", "700", "800", "900"),
+            FONT_WEIGHTS,
+        )
+    }
+
+    @Test
+    fun `every offered weight renders differently`() {
+        // A weight the platform cannot map would be a dead chip: it would
+        // look the same as the default.
+        val rendered = FONT_WEIGHTS.map { weightFor(it.toInt()) }
+
+        assertEquals(
+            "every weight the picker offers must look different",
+            FONT_WEIGHTS.size,
+            rendered.distinct().size,
+        )
     }
 }
 ```
