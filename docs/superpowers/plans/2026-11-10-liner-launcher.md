@@ -2635,6 +2635,37 @@ import android.content.Intent
 import dev.liner.launcher.model.InstalledApp
 
 /**
+ * The state machine behind [InstalledAppsRepository]: remembers the last
+ * successful list and falls back to it when a query fails.
+ *
+ * Deliberately free of Android types — it takes a query *function* — so the
+ * fallback is unit-testable on the JVM, which is the only way to prove the
+ * launcher survives a failing package manager.
+ */
+class AppListProvider(private val query: () -> List<InstalledApp>) {
+
+    @Volatile
+    private var lastSuccessful: List<InstalledApp> = emptyList()
+
+    fun load(): List<InstalledApp> = try {
+        val apps = query()
+        // An empty result is not a successful result: some OEMs surface
+        // restricted package visibility as an empty list rather than an
+        // error, and adopting that would blank the drawer and destroy the
+        // cache. A device always has at least one launchable activity — its
+        // own launcher.
+        if (apps.isNotEmpty()) {
+            lastSuccessful = apps
+        } else if (lastSuccessful.isEmpty()) {
+            lastSuccessful = apps
+        }
+        apps
+    } catch (_: Throwable) {
+        lastSuccessful
+    }
+}
+
+/**
  * Reads the launchable apps installed on the device.
  *
  * Never throws. A failed query falls back to the last successful list rather
@@ -2645,25 +2676,27 @@ class InstalledAppsRepository(context: Context) {
 
     private val packageManager = context.applicationContext.packageManager
 
-    @Volatile
-    private var lastSuccessful: List<InstalledApp> = emptyList()
+    private val provider = AppListProvider { queryInstalledApps() }
 
-    fun loadInstalledApps(): List<InstalledApp> = try {
+    fun loadInstalledApps(): List<InstalledApp> = provider.load()
+
+    private fun queryInstalledApps(): List<InstalledApp> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val apps = packageManager.queryIntentActivities(intent, 0)
+        return packageManager.queryIntentActivities(intent, 0)
             .mapNotNull { resolved ->
                 val info = resolved.activityInfo ?: return@mapNotNull null
                 InstalledApp(
                     packageName = info.packageName,
                     activityClass = info.name,
-                    systemLabel = resolved.loadLabel(packageManager).toString(),
+                    // A null label must not abort the whole query — fall back
+                    // to the package name for that one app.
+                    systemLabel = resolved.loadLabel(packageManager)?.toString() ?: info.packageName,
                 )
             }
-            .distinctBy { it.packageName to it.activityClass }
-        lastSuccessful = apps
-        apps
-    } catch (_: Throwable) {
-        lastSuccessful
+            // One entry per app: an app with two MAIN/LAUNCHER activities must
+            // not produce two tiles in the drawer, and the home path keys its
+            // entries by package name anyway.
+            .distinctBy { it.packageName }
     }
 }
 ```
@@ -2681,6 +2714,7 @@ import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 
 /**
@@ -2695,11 +2729,21 @@ class IconCache(
     private val packageManager: PackageManager,
     private val sizePx: Int,
 ) {
-    private val cache = LruCache<String, ImageBitmap>(64)
+    // Bounded by bytes, not entry count: these are ARGB_8888 bitmaps at the
+    // drawable's intrinsic resolution, so a few hundred KB each on a modern
+    // device. A count-based ceiling of 64 would be tens of megabytes.
+    private val cache = object : LruCache<String, ImageBitmap>(MAX_CACHE_BYTES) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int = value.asAndroidBitmap().byteCount
+    }
+
+    // Packages whose icon could not be loaded. Without this, every
+    // recomposition of such a tile re-enters getApplicationIcon and re-throws.
+    private val unavailable = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     fun icon(packageName: String): ImageBitmap? {
         val key = "$packageName@$sizePx"
         cache.get(key)?.let { return it }
+        if (packageName in unavailable) return null
 
         val bitmap = try {
             packageManager.getApplicationIcon(packageName).toImageBitmap()
@@ -2707,8 +2751,16 @@ class IconCache(
             null
         }
 
-        if (bitmap != null) cache.put(key, bitmap)
+        if (bitmap != null) {
+            cache.put(key, bitmap)
+        } else {
+            unavailable += packageName
+        }
         return bitmap
+    }
+
+    private companion object {
+        const val MAX_CACHE_BYTES = 16 * 1024 * 1024
     }
 
     private fun Drawable.toImageBitmap(): ImageBitmap? {
@@ -2740,11 +2792,20 @@ import dev.liner.launcher.store.LayoutRepository
 
 /** Manual dependency container. Small enough that a DI framework would be overhead. */
 class AppContainer(context: Context) {
+
+    private companion object {
+        const val ICON_TILE_DP = 48
+    }
+
     private val appContext = context.applicationContext
 
     val repository: LayoutRepository = LayoutRepository(DataStoreDocumentStore(appContext))
     val appsRepository: InstalledAppsRepository = InstalledAppsRepository(appContext)
-    val iconCache: IconCache = IconCache(appContext.packageManager, sizePx = 96)
+    // 48dp is the drawer's tile size; the pixel size follows the density.
+    val iconCache: IconCache = IconCache(
+        appContext.packageManager,
+        sizePx = (ICON_TILE_DP * appContext.resources.displayMetrics.density).toInt(),
+    )
 }
 ```
 
