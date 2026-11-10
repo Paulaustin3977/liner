@@ -72,9 +72,10 @@ layout keeps responsibilities separated.
 
 ```
 dev.liner.launcher
-├─ model/       Pure Kotlin. LayoutDocument, Section, HomeItem, ThemeTokens,
-│               plus the pure edit operations (reorder, move, rename, remove).
-│               ZERO Android dependencies → unit-testable on the JVM.
+├─ model/       Pure Kotlin: LayoutDocument, Section, HomeItem, ThemeTokens,
+│               InstalledApp, ResolvedStyle, plus the pure edit operations
+│               (reorder, move, rename, remove) and the pure drag-target
+│               maths. ZERO Android dependencies → unit-testable on the JVM.
 ├─ store/       LayoutRepository: DataStore<LayoutDocument> backed by a single
 │               JSON string. Exposes StateFlow<LayoutDocument>.
 ├─ apps/        InstalledAppsRepository: PackageManager queries → InstalledApp
@@ -108,6 +109,8 @@ data class LayoutDocument(
     val version: Int = 1,
     val sections: List<Section> = emptyList(),
     val theme: ThemeTokens = ThemeTokens(),
+    val hiddenFromDrawer: List<String> = emptyList(),  // package names
+    val autoPruneUninstalled: Boolean = false,
 )
 
 @Serializable
@@ -184,12 +187,31 @@ fun LayoutDocument.moveItem(itemId: String, toSectionId: String, toIndex: Int): 
 fun LayoutDocument.removeItem(itemId: String): LayoutDocument
 fun LayoutDocument.renameItem(itemId: String, label: String?): LayoutDocument
 fun LayoutDocument.setItemStyle(itemId: String, style: ItemStyle?): LayoutDocument
-fun LayoutDocument.addSection(title: String?): LayoutDocument
+fun LayoutDocument.addItem(item: HomeItem, sectionId: String, index: Int = Int.MAX_VALUE): LayoutDocument
+fun LayoutDocument.reorderHomeItems(flatOrder: List<String>): LayoutDocument
+fun LayoutDocument.addSection(id: String, title: String?): LayoutDocument
 fun LayoutDocument.renameSection(sectionId: String, title: String?): LayoutDocument
 fun LayoutDocument.removeSection(sectionId: String): LayoutDocument
 fun LayoutDocument.moveSection(sectionId: String, toIndex: Int): LayoutDocument
+fun LayoutDocument.setHiddenFromDrawer(packageName: String, hidden: Boolean): LayoutDocument
+fun LayoutDocument.setAutoPruneUninstalled(enabled: Boolean): LayoutDocument
 fun LayoutDocument.updateTheme(transform: (ThemeTokens) -> ThemeTokens): LayoutDocument
 ```
+
+Two semantics worth stating explicitly, because they are the ones most
+likely to be got wrong:
+
+- **`moveItem`** removes the item from wherever it is, then inserts it at
+  `toIndex` *within the target section's post-removal item list*. `toIndex`
+  is clamped to the valid range; an unknown `toSectionId` is a no-op.
+- **`reorderHomeItems`** takes the desired flat order of home item ids and
+  reorders items *within their existing sections* to match it. It never
+  moves an item between sections — that is `moveItem`'s job. This is how the
+  Settings → Apps tab reorders: it presents the home items flattened
+  across sections, and a reorder there produces a new flat order.
+
+The caller supplies the UUID for `addSection` and `addItem`, keeping `model`
+free of nondeterministic generation and therefore deterministic under test.
 
 ### 5.2 Resolved appearance
 
@@ -245,6 +267,24 @@ Interactions:
 **Edit mode** is entered by long-press and exited by tapping empty space or
 pressing back. While active, items lift slightly (scale 1.02), a trash zone
 appears at the bottom of the screen, and the clock/date dim.
+
+#### Drag model
+
+The drag does **not** reorder the list live under the finger. Instead:
+
+1. The dragged item stays in its slot but renders faded, and a horizontal
+   insertion indicator line animates to the slot the item would land in.
+2. The target is computed by pure function `DragTargeting.computeTarget(dragY,
+   bounds, draggedId, sectionOrder)`, where `bounds` is the ordered list of
+   on-screen item rectangles in root coordinates.
+3. On release the reorder is committed in one `moveItem` call.
+
+This keeps the gesture maths out of the rendering layer, makes it unit-
+testable on the JVM, and avoids the classic live-reorder problem where the
+item jumps under the finger as the list reflows. The computation lives in
+`model` as `DragTargeting` and returns either `InSection(sectionId, index)`
+or `PreviousSection(sectionId)` — the latter when the drag is dragged above
+its own section's first item and a preceding section exists.
 
 ### 6.2 Drawer
 
