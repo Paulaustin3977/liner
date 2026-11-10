@@ -4676,6 +4676,8 @@ git commit -m "feat(ui): add the app drawer with filter, grid and text modes"
 
 **Files:**
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/home/EditModeController.kt`
+- Test: `app/src/test/kotlin/dev/liner/launcher/ui/home/EditModeControllerTest.kt`
+- Test: `app/src/test/kotlin/dev/liner/launcher/ui/home/DragIndicatorTest.kt`
 - Create: `app/src/main/kotlin/dev/liner/launcher/ui/common/EditSheets.kt`
 - Modify: `app/src/main/kotlin/dev/liner/launcher/ui/home/HomeScreen.kt`
 - Test: `app/src/test/kotlin/dev/liner/launcher/model/DragTargetingTest.kt` (already covers the maths)
@@ -4737,6 +4739,26 @@ class EditModeController {
         draggingId = null
         dragTarget = null
         return target
+    }
+
+    /**
+     * Drops the computed insertion target. Used while the drag is over the
+     * trash zone, where the item is removed rather than moved, so there is no
+     * slot to show.
+     */
+    fun clearTarget() {
+        dragTarget = null
+    }
+
+    /**
+     * Leaves edit mode but keeps the recorded bounds: they are filled in by
+     * the layout pass that placed the rows, and that pass does not run again
+     * just because edit mode ended.
+     */
+    fun exitEditMode() {
+        active = false
+        draggingId = null
+        dragTarget = null
     }
 
     fun clear() {
@@ -4872,43 +4894,54 @@ In `HomeScreen.kt`:
 
 ```kotlin
 .pointerInput(entry.item.id) {
+    // The long press is detected here rather than by a combinedClickable: the
+    // long press of a clickable consumes the rest of the pointer stream,
+    // which would cancel the drag it is meant to start.
     detectDragGesturesAfterLongPress(
         onDragStart = { offset ->
             editController.startDrag(entry.item.id)
-            dragY = entryTop + offset.y
+            dragX = rowOrigin.x + offset.x
+            dragY = rowOrigin.y + offset.y
+            overTrash = false
         },
-        onDrag = { change, dragAmount ->
+        onDrag = { change, _ ->
             change.consume()
-            dragY += dragAmount
-            editController.updateDrag(dragY, document.sections.map { it.id })
-        },
-        onDragEnd = {
-            when (val target = editController.endDrag()) {
-                is DragTarget.InSection -> viewModel.update { doc ->
-                    doc.moveItem(entry.item.id, target.sectionId, target.index)
-                }
-                is DragTarget.PreviousSection -> viewModel.update { doc ->
-                    doc.moveItem(entry.item.id, target.sectionId, doc.sectionById(target.sectionId)?.items?.size ?: 0)
-                }
-                null -> Unit
+            val finger = rowOrigin + change.position
+            dragX = finger.x
+            dragY = finger.y
+            overTrash = trashBounds?.contains(finger) == true
+            if (overTrash) {
+                // The item is dropped, not moved, so there is no slot to show.
+                editController.clearTarget()
+            } else {
+                editController.updateDrag(dragY, sectionOrder)
             }
         },
+        onDragEnd = { commitDrop(entry.item.id) },
         onDragCancel = { editController.endDrag() },
     )
 }
 ```
 
-5. A long press on the row (without moving) opens the editor sheet:
+5. The row's click opens the editor sheet while edit mode is active, and
+launches the app otherwise:
 
 ```kotlin
-.combinedClickable(
-    onClick = { if (editController.active) Unit else onLaunch(entry) },
-    onLongClick = { editingEntry = entry },
-)
+.clickable {
+    if (editController.active) {
+        editingEntry = entry
+    } else {
+        onLaunch(entry)
+    }
+}
 ```
 
-`combinedClickable` is `androidx.compose.foundation.ExperimentalFoundationApi`; annotate
-the composable that uses it with `@OptIn(ExperimentalFoundationApi::class)`.
+The long press itself is detected by `detectDragGesturesAfterLongPress` in the
+pointer input above — **not** by a `combinedClickable`. Compose's long press
+path calls `consumeUntilUp()`, which eats the rest of the pointer stream and
+cancels the very drag the gesture exists to start. A long press that never
+moves ends the gesture without a drag, and the row is opened for editing
+there.
 
 6. A long press on a section header opens the section editor sheet:
 
@@ -4960,7 +4993,7 @@ Then in `onDrag`:
 ```kotlin
 val overTrash = trashBounds?.contains(Offset(dragX, dragY)) == true
 if (overTrash) {
-    editController.dragTarget = null
+    editController.clearTarget()
 } else {
     editController.updateDrag(dragY, document.sections.map { it.id })
 }
@@ -4991,39 +5024,72 @@ if (overTrash) {
    would land in:
 
 ```kotlin
-val target = editController.dragTarget
-if (target != null) {
-    val indicatorTop = remember(target, editController.bounds) {
-        when (target) {
-            is DragTarget.InSection -> {
-                val siblings = editController.bounds.values
-                    .filter { it.sectionId == target.sectionId }
-                    .sortedBy { it.top }
-                if (target.index < siblings.size) siblings[target.index].top
-                else siblings.lastOrNull()?.bottom ?: 0f
-            }
-
-            is DragTarget.PreviousSection -> {
-                editController.bounds.values
-                    .filter { it.sectionId == target.sectionId }
-                    .minOfOrNull { it.top } ?: 0f
-            }
-        }
-    }
-
+val dragTarget = editController.dragTarget
+if (dragTarget != null) {
+    val indicatorTop = dragIndicatorTop(
+        target = dragTarget,
+        bounds = editController.bounds.values.toList(),
+        draggedId = editController.draggingId,
+    )
     Box(
         Modifier
             .offset { androidx.compose.ui.unit.IntOffset(0, indicatorTop.toInt()) }
             .padding(horizontal = 16.dp)
             .fillMaxWidth()
             .height(2.dp)
-            .background(Color.White),
+            // The theme's own text colour, so the line is visible on a light
+            // background as well as a dark one.
+            .background(chromeColor),
     )
 }
 ```
 
 The indicator is drawn inside the `Box` that wraps the list, positioned with
 `offset` so it floats over the rows.
+
+The arithmetic lives in a pure function so it can be tested without a device:
+
+```kotlin
+/**
+ * The Y at which the insertion indicator is drawn for [target].
+ *
+ * The index of a [DragTarget.InSection] counts the dragged item as already
+ * removed, so the dragged row must be left out of the sibling list — counting
+ * it would put the indicator a row too low. A [DragTarget.PreviousSection]
+ * drops the item at the *end* of that section, so its indicator belongs under
+ * the section's last row rather than above its first.
+ */
+internal fun dragIndicatorTop(
+    target: DragTarget,
+    bounds: List<ItemBounds>,
+    draggedId: String?,
+): Float = when (target) {
+    is DragTarget.InSection -> {
+        val siblings = bounds
+            .filter { it.sectionId == target.sectionId && it.id != draggedId }
+            .sortedBy { it.top }
+        if (target.index < siblings.size) {
+            siblings[target.index].top
+        } else {
+            // The item lands at the end of the section: under its last row,
+            // or — when it is the section's only row — where it already is.
+            siblings.lastOrNull()?.bottom
+                ?: bounds.firstOrNull { it.id == draggedId }?.top
+                ?: 0f
+        }
+    }
+    is DragTarget.PreviousSection -> {
+        val previous = bounds
+            .filter { it.sectionId == target.sectionId }
+            .sortedBy { it.top }
+        previous.lastOrNull()?.bottom
+            // The previous section is empty, so there is no row to draw
+            // under: the indicator goes where the dragged row came from.
+            ?: bounds.firstOrNull { it.id == draggedId }?.top
+            ?: 0f
+    }
+}
+```
 
 - [ ] **Step 4: Build and verify**
 
