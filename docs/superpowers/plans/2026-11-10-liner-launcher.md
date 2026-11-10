@@ -2153,7 +2153,7 @@ git commit -m "feat(model): add pure drag-target computation"
   - `interface DocumentStore { suspend fun read(): String?; suspend fun write(json: String) }`
   - `class InMemoryDocumentStore(initial: String? = null) : DocumentStore` (test double, lives in main so the instrumentation tests can use it too)
   - `class DataStoreDocumentStore(context: Context) : DocumentStore`
-  - `class LayoutRepository(store: DocumentStore)` with `val document: StateFlow<LayoutDocument>`, `val writeFailed: StateFlow<Boolean>`, `suspend fun load()`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
+  - `class LayoutRepository(store: DocumentStore)` with `val document: StateFlow<LayoutDocument>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `var recoveredPayload: String?` (private setter), `suspend fun load()`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2320,6 +2320,7 @@ package dev.liner.launcher.store
 
 import dev.liner.launcher.model.DocumentCodec
 import dev.liner.launcher.model.LayoutDocument
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -2372,6 +2373,10 @@ class LayoutRepository(private val store: DocumentStore) {
                 try {
                     store.write(DocumentCodec.encode(pending.document))
                     _writeFailed.value = false
+                } catch (e: CancellationException) {
+                    // Never swallow cancellation — it must propagate so the
+                    // writer shuts down with the rest of its scope.
+                    throw e
                 } catch (_: Throwable) {
                     // Throwable here, unlike the model layer's Exception: this
                     // is a long-lived writer coroutine, and letting an Error
@@ -2403,6 +2408,10 @@ class LayoutRepository(private val store: DocumentStore) {
         val raw = try {
             store.read()
         } catch (_: Throwable) {
+            // The read itself failed — that is not the same as "nothing
+            // stored", and the user's layout must not be reported as if it
+            // had never existed.
+            _loadFailed.value = true
             null
         }
 
@@ -2422,6 +2431,8 @@ class LayoutRepository(private val store: DocumentStore) {
             _loadFailed.value = true
             _document.value = LayoutDocument()
         } else {
+            recoveredPayload = null
+            _loadFailed.value = false
             _document.value = decoded
         }
     }
@@ -2460,9 +2471,14 @@ import kotlinx.coroutines.flow.first
 
 class DataStoreDocumentStore(context: Context) : DocumentStore {
 
+    // Hoisted so the lambda below captures the application context, not
+    // whatever context this was constructed with — an Activity would be
+    // retained by the DataStore for the life of the process.
+    private val appContext: Context = context.applicationContext
+
     private val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob()),
-        produceFile = { context.applicationContext.preferencesDataStoreFile(FILE_NAME) },
+        produceFile = { appContext.preferencesDataStoreFile(FILE_NAME) },
     )
 
     override suspend fun read(): String? = dataStore.data.first()[KEY]
@@ -3011,7 +3027,7 @@ git commit -m "feat(platform): add app launching, default-home detection, wallpa
 - Consumes: Task 4's `AppCatalog`/`StyleResolver`/`ClockFormatter`, Task 6's `LayoutRepository`, Task 8's `LinerTheme`.
 - Produces:
   - `class HomeViewModel(repository: LayoutRepository, appsRepository: InstalledAppsRepository) : ViewModel` with `val document: StateFlow<LayoutDocument>`, `val installedApps: StateFlow<List<InstalledApp>>`, `val homeEntries: StateFlow<List<HomeEntry>>`, `val writeFailed: StateFlow<Boolean>`, `val loadFailed: StateFlow<Boolean>`, `fun update(transform: (LayoutDocument) -> LayoutDocument)`
-  - `@Composable fun HomeScreen(viewModel: HomeViewModel, onLaunch: (InstalledApp) -> Unit, onOpenSettings: (String?) -> Unit)`
+  - `@Composable fun HomeScreen(viewModel: HomeViewModel, wallpaper: Drawable?, iconCache: IconCache, onLaunch: (HomeEntry) -> Unit, onOpenSettings: (String?) -> Unit, onRecoverLayout: (String) -> Unit)`
   - `@Composable fun BackgroundLayer(spec: BackgroundSpec, wallpaper: Drawable?)`
   - `@Composable fun LabelRow(text: String, style: ResolvedStyle, alignment: Alignment.Horizontal, icon: ImageBitmap?, iconSizeDp: Int, enabled: Boolean)`
   - `@Composable fun SectionHeaderRow(title: String, style: ResolvedStyle, uppercase: Boolean, showRule: Boolean)`
@@ -3318,6 +3334,10 @@ class HomeViewModel(
 
     val loadFailed: StateFlow<Boolean> = repository.loadFailed
 
+    /** The unreadable payload from a failed load, kept so it can be logged. */
+    val recoveredPayload: String?
+        get() = repository.recoveredPayload
+
     private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
     val installedApps: StateFlow<List<InstalledApp>> = _installedApps
 
@@ -3401,13 +3421,16 @@ fun HomeScreen(
     iconCache: IconCache,
     onLaunch: (HomeEntry) -> Unit,
     onOpenSettings: (String?) -> Unit,
+    onRecoverLayout: (String) -> Unit,
 ) {
     val document by viewModel.document.collectAsStateWithLifecycle()
     val entries by viewModel.homeEntries.collectAsStateWithLifecycle()
     val loadFailed by viewModel.loadFailed.collectAsStateWithLifecycle()
 
     // The stored layout could not be read. Tell the user once, rather than
-    // silently showing them a default screen they never configured.
+    // silently showing them a default screen they never configured, and hand
+    // the original payload to the platform layer so it can be written to a
+    // log file before anything overwrites it.
     val context = androidx.compose.ui.platform.LocalContext.current
     androidx.compose.runtime.LaunchedEffect(loadFailed) {
         if (loadFailed) {
@@ -3416,6 +3439,7 @@ fun HomeScreen(
                 "Your saved layout could not be read, so Liner started with defaults.",
                 android.widget.Toast.LENGTH_LONG,
             ).show()
+            viewModel.recoveredPayload?.let(onRecoverLayout)
         }
     }
     val theme = document.theme
@@ -3552,8 +3576,20 @@ class LauncherActivity : ComponentActivity() {
                     iconCache = container.iconCache,
                     onLaunch = { entry -> launchEntry(entry.packageName) },
                     onOpenSettings = { tab -> openSettings(tab) },
+                    onRecoverLayout = { payload -> writeRecoveryLog(payload) },
                 )
             }
+        }
+    }
+
+    /**
+     * Keeps the unreadable layout on disk before the first edit overwrites it,
+     * so a user's work is recoverable by hand. A logging failure must never
+     * crash the launcher.
+     */
+    private fun writeRecoveryLog(payload: String) {
+        runCatching {
+            java.io.File(filesDir, "liner-recovered-layout.json").writeText(payload)
         }
     }
 
