@@ -2770,7 +2770,6 @@ by the instrumentation tests in Task 15.
 ```kotlin
 package dev.liner.launcher.apps
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import dev.liner.launcher.model.InstalledApp
@@ -3341,7 +3340,7 @@ needs to differ between modes.
 
 Run: `"$GRADLE_BIN" "${GRADLE_ARGS[@]}" :app:testDebugUnitTest --tests '*ThemeMappingTest*'`
 
-Expected: `BUILD SUCCESSFUL`, 4 tests, 0 failures.
+Expected: `BUILD SUCCESSFUL`, 5 tests, 0 failures.
 
 - [ ] **Step 7: Commit**
 

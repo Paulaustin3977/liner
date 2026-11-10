@@ -314,8 +314,10 @@ Tabs:
 **Appearance**
 - Background: solid / gradient (two stops + angle) / wallpaper + dim scrim (0–90%)
 - Text color: solid picker, or follow light/dark
-- List font family: `sans-serif`, `sans-serif-light`, `sans-serif-medium`,
-  `sans-serif-condensed`, `serif`, `monospace`, `cursive`
+- List font family: `sans-serif`, `serif`, `monospace`, `cursive` — only
+  genuinely distinct families. The platform's light/medium/condensed faces
+  cannot be referenced from Compose without bundling font files as resources,
+  so offering them would present choices that render identically.
 - List text size 12–48sp; weight 100–900; letter spacing −0.05 to 0.2em
 - Row spacing 0–32dp; horizontal/vertical screen padding 0–48dp
 - Alignment: start / center / end
