@@ -853,6 +853,72 @@ class DocumentCodecTest {
 }
 ```
 
+- [ ] **Step 1c: Write the icon cache policy test**
+
+`app/src/test/kotlin/dev/liner/launcher/apps/IconCacheTest.kt`:
+
+```kotlin
+package dev.liner.launcher.apps
+
+import android.content.pm.PackageManager
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.fail
+import org.junit.Test
+
+class IconCacheTest {
+
+    @Test
+    fun `a genuinely missing package is remembered and not asked for again`() {
+        var calls = 0
+        val cache = IconCache(
+            loadIcon = { packageName ->
+                calls++
+                throw PackageManager.NameNotFoundException()
+            },
+            sizePx = 96,
+        )
+
+        assertNull(cache.icon("com.gone"))
+        assertNull(cache.icon("com.gone"))
+
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun `a transient failure is not remembered so the next call retries`() {
+        var calls = 0
+        val cache = IconCache(
+            loadIcon = { packageName ->
+                calls++
+                throw IllegalStateException("transient")
+            },
+            sizePx = 96,
+        )
+
+        assertNull(cache.icon("com.flaky"))
+        assertNull(cache.icon("com.flaky"))
+
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun `an error is not swallowed`() {
+        val cache = IconCache(
+            loadIcon = { packageName -> throw OutOfMemoryError("no room") },
+            sizePx = 96,
+        )
+
+        try {
+            cache.icon("com.oom")
+            fail("expected the error to propagate")
+        } catch (_: OutOfMemoryError) {
+            // expected — an Error must not be swallowed into a silent fallback
+        }
+    }
+}
+```
+
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run:
@@ -2544,13 +2610,14 @@ git commit -m "feat(store): add document store, repository and DataStore adapter
 - Create: `app/src/main/kotlin/dev/liner/launcher/platform/{AppContainer,LinerApp}.kt` — move `LinerApp` here
 - Test: `app/src/test/kotlin/dev/liner/launcher/model/AppCatalogIntegrationTest.kt`
 - Test: `app/src/test/kotlin/dev/liner/launcher/apps/AppListProviderTest.kt`
+- Test: `app/src/test/kotlin/dev/liner/launcher/apps/IconCacheTest.kt`
 
 **Interfaces:**
 - Consumes: Task 2's `InstalledApp`, Task 4's `AppCatalog`.
 - Produces:
   - `class AppListProvider(query: () -> List<InstalledApp>)` with `fun load(): List<InstalledApp>` — pure, no Android types, so the fallback is JVM-testable
   - `class InstalledAppsRepository(context: Context)` with `fun loadInstalledApps(): List<InstalledApp>`
-  - `class IconCache(packageManager: PackageManager, sizePx: Int)` with `fun icon(packageName: String): ImageBitmap?`
+  - `class IconCache(loadIcon: (String) -> ImageBitmap?, sizePx: Int)` with `fun icon(packageName: String): ImageBitmap?` and `companion object { fun forPackageManager(packageManager: PackageManager, sizePx: Int): IconCache }`
   - `class AppContainer(context: Context)` with `val repository: LayoutRepository`, `val appsRepository: InstalledAppsRepository`, `val iconCache: IconCache`
   - `class LinerApp : Application` with `val container: AppContainer`
 
@@ -2728,7 +2795,10 @@ class AppListProvider(private val query: () -> List<InstalledApp>) {
             // filtered, and the remembered list stands in for it.
             apps.ifEmpty { lastSuccessful }
         }
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
+        // Exception, not Throwable, to match the icon path: a bug or an
+        // OutOfMemoryError must surface rather than being swallowed into a
+        // silent fallback.
         lastSuccessful
     }
 }
@@ -2798,9 +2868,12 @@ import androidx.compose.ui.graphics.asImageBitmap
  * [sizePx] only when the drawable reports no size of its own — that keeps
  * adaptive icons crisp when the UI scales them down. A failed load returns
  * null rather than throwing, so the caller can render the app label instead.
+ *
+ * The loader is injected rather than taken as a PackageManager, so the
+ * caching and stickiness policy can be tested on the JVM without a device.
  */
 class IconCache(
-    private val packageManager: PackageManager,
+    private val loadIcon: (String) -> ImageBitmap?,
     private val sizePx: Int,
 ) {
     // Bounded by bytes, not entry count: these are ARGB_8888 bitmaps at the
@@ -2810,8 +2883,8 @@ class IconCache(
         override fun sizeOf(key: String, value: ImageBitmap): Int = value.asAndroidBitmap().byteCount
     }
 
-    // Packages whose icon could not be loaded. Without this, every
-    // recomposition of such a tile re-enters getApplicationIcon and re-throws.
+    // Packages that are genuinely gone. Without this, every recomposition of
+    // a tile whose icon is missing re-enters the loader and re-throws.
     private val unavailable = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     fun icon(packageName: String): ImageBitmap? {
@@ -2820,7 +2893,7 @@ class IconCache(
         if (packageName in unavailable) return null
 
         val bitmap = try {
-            packageManager.getApplicationIcon(packageName).toImageBitmap()
+            loadIcon(packageName)
         } catch (_: PackageManager.NameNotFoundException) {
             // The package is genuinely gone. Remember that, so the tile stops
             // asking for an icon that will never load.
@@ -2837,21 +2910,33 @@ class IconCache(
         return bitmap
     }
 
-    private companion object {
-        const val MAX_CACHE_BYTES = 16 * 1024 * 1024
-    }
+    companion object {
+        private const val MAX_CACHE_BYTES = 16 * 1024 * 1024
 
-    private fun Drawable.toImageBitmap(): ImageBitmap? {
-        val width = if (intrinsicWidth > 0) intrinsicWidth else sizePx
-        val height = if (intrinsicHeight > 0) intrinsicHeight else sizePx
-        if (width <= 0 || height <= 0) return null
-
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        setBounds(0, 0, width, height)
-        draw(canvas)
-        return bitmap.asImageBitmap()
+        /**
+         * The production loader: rasterises the package's application icon.
+         */
+        fun forPackageManager(packageManager: PackageManager, sizePx: Int): IconCache =
+            IconCache(
+                loadIcon = { packageName ->
+                    packageManager.getApplicationIcon(packageName).toImageBitmap(sizePx)
+                },
+                sizePx = sizePx,
+            )
     }
+}
+
+/** Rasterises a drawable, falling back to [fallbackSize] when it reports no size. */
+private fun Drawable.toImageBitmap(fallbackSize: Int): ImageBitmap? {
+    val width = if (intrinsicWidth > 0) intrinsicWidth else fallbackSize
+    val height = if (intrinsicHeight > 0) intrinsicHeight else fallbackSize
+    if (width <= 0 || height <= 0) return null
+
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    setBounds(0, 0, width, height)
+    draw(canvas)
+    return bitmap.asImageBitmap()
 }
 ```
 
@@ -2880,7 +2965,7 @@ class AppContainer(context: Context) {
     val repository: LayoutRepository = LayoutRepository(DataStoreDocumentStore(appContext))
     val appsRepository: InstalledAppsRepository = InstalledAppsRepository(appContext)
     // 48dp is the drawer's tile size; the pixel size follows the density.
-    val iconCache: IconCache = IconCache(
+    val iconCache: IconCache = IconCache.forPackageManager(
         appContext.packageManager,
         sizePx = (ICON_TILE_DP * appContext.resources.displayMetrics.density).toInt(),
     )
