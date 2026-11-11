@@ -13,7 +13,8 @@ device.
 
 ## Install
 
-1. Download `liner-release.apk`.
+1. Download `liner-release.apk` from the
+   [v1.0 release](https://github.com/Paulaustin3977/liner/releases/tag/v1.0).
 2. Copy it to your phone and tap it. Allow "install from unknown sources".
 3. Open Liner, then follow the prompt to make it your default launcher.
 
@@ -71,6 +72,9 @@ signed** and cannot be installed. The debug build needs no keystore at all.
 
 ## What's in the box
 
+The [v1.0 release](https://github.com/Paulaustin3977/liner/releases/tag/v1.0)
+carries these files:
+
 | File | What it is |
 |---|---|
 | `liner-release.apk` | Signed release build, ready to install |
@@ -79,9 +83,10 @@ signed** and cannot be installed. The debug build needs no keystore at all.
 | `README.md` | This file |
 | `MANUAL_TEST.md` | The manual test script |
 
-The source zip is the project as it is in version control: the Gradle
-wrapper, the sources, the tests and the documentation. It does not contain
-the built APKs, the keystore or any local build output.
+This repository holds the same project as the source of truth — the Gradle
+wrapper, the sources, the tests, the design spec and the build plan. The
+source zip is the project as it is in version control; it does not contain the
+built APKs, the keystore or any local build output.
 
 ## Features
 

@@ -12,6 +12,7 @@ build/
 local.properties
 keystore.properties
 .superpowers/
+.skills/
 
 # The delivery: the built APKs and the source zip. Built, never committed.
 dist/
