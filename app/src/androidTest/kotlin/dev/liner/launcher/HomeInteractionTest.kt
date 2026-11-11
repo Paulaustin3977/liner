@@ -144,9 +144,9 @@ class HomeInteractionTest {
             // A flick up from the bottom edge, where the drawer's gesture zone
             // sits. The move is long enough to pass the touch slop in one
             // event, which is what a quick flick looks like.
-            val start = Offset(center.x, height - 20f)
-            down(start)
-            moveTo(Offset(center.x, height - 20f - 250f))
+            val startY = height - 20f
+            down(Offset(center.x, startY))
+            moveTo(Offset(center.x, (startY - 250f).coerceAtLeast(1f)))
             up()
         }
 
