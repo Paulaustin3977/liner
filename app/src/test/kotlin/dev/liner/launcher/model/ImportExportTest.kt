@@ -192,4 +192,96 @@ class ImportExportTest {
 
         assertTrue(result.summary.any { it.contains("Removes") && it.contains("Mine") })
     }
+
+    @Test
+    fun `the summary reports sections that are in another order`() {
+        // The sections are the same ones — the same titles, the same apps
+        // in them — but they are in another order, so the import moves the
+        // sections around on the home screen.
+        val two = LayoutDocument(
+            sections = listOf(
+                Section(id = "s1", title = "Mine", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+                Section(id = "s2", title = "Work", items = listOf(HomeItem(id = "b", packageName = "p.b"))),
+            ),
+        )
+        val swapped = LayoutDocument(
+            sections = listOf(
+                Section(id = "s2", title = "Work", items = listOf(HomeItem(id = "b", packageName = "p.b"))),
+                Section(id = "s1", title = "Mine", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+            ),
+        )
+
+        val result = ImportValidator.validate(DocumentCodec.encode(swapped), two)
+
+        assertTrue(result.summary.any { it.contains("Reorders") && it.contains("sections") })
+        assertTrue(result.summary.none { it.contains("No visible changes") })
+    }
+
+    @Test
+    fun `the summary reports a renamed app`() {
+        val incoming = LayoutDocument(
+            sections = listOf(
+                Section(id = "s1", title = "Mine", items = listOf(HomeItem(id = "a", packageName = "p.a", label = "Chat"))),
+            ),
+        )
+
+        val result = ImportValidator.validate(DocumentCodec.encode(incoming), current)
+
+        assertTrue(result.summary.any { it.contains("Renames") && it.contains("p.a") && it.contains("Chat") })
+        assertTrue(result.summary.none { it.contains("No visible changes") })
+    }
+
+    @Test
+    fun `the summary reports an app whose custom name is taken away`() {
+        val named = LayoutDocument(
+            sections = listOf(
+                Section(id = "s1", title = "Mine", items = listOf(HomeItem(id = "a", packageName = "p.a", label = "Chat"))),
+            ),
+        )
+
+        val result = ImportValidator.validate(DocumentCodec.encode(current), named)
+
+        assertTrue(result.summary.any { it.contains("Renames") && it.contains("p.a") })
+        assertTrue(result.summary.none { it.contains("No visible changes") })
+    }
+
+    @Test
+    fun `the summary reports a restyled app`() {
+        val incoming = LayoutDocument(
+            sections = listOf(
+                Section(
+                    id = "s1",
+                    title = "Mine",
+                    items = listOf(HomeItem(id = "a", packageName = "p.a", style = ItemStyle(textSizeSp = 30f))),
+                ),
+            ),
+        )
+
+        val result = ImportValidator.validate(DocumentCodec.encode(incoming), current)
+
+        assertTrue(result.summary.any { it.contains("Restyles") && it.contains("p.a") })
+        assertTrue(result.summary.none { it.contains("No visible changes") })
+    }
+
+    @Test
+    fun `an identical layout reports no visible changes`() {
+        // The same layout — same sections in the same order, same names and
+        // same styles — changes nothing, so nothing may be reported.
+        val same = LayoutDocument(
+            sections = listOf(
+                Section(
+                    id = "s1",
+                    title = "Mine",
+                    items = listOf(
+                        HomeItem(id = "a", packageName = "p.a", label = "Chat", style = ItemStyle(textSizeSp = 30f)),
+                    ),
+                ),
+                Section(id = "s2", title = "Work", items = listOf(HomeItem(id = "b", packageName = "p.b"))),
+            ),
+        )
+
+        val result = ImportValidator.validate(DocumentCodec.encode(same), same)
+
+        assertEquals(listOf("No visible changes"), result.summary)
+    }
 }

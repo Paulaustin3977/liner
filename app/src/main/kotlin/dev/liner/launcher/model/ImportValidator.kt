@@ -84,8 +84,9 @@ object ImportValidator {
      * What the imported layout would change about the current one.
      *
      * The apps are named by their package, because that is what a layout
-     * document holds — the name the user gave an app is not part of the
-     * document.
+     * document holds — the name the user gave an app and the style set on
+     * it are part of the document too, and are reported by their own
+     * comparison.
      *
      * The sections are compared by their membership and their titles, not by
      * their number alone: the same apps in another section, in another
@@ -103,6 +104,7 @@ object ImportValidator {
         if (added.isNotEmpty()) changes += "Adds apps: ${added.joinToString()}"
         if (removed.isNotEmpty()) changes += "Removes apps: ${removed.joinToString()}"
 
+        changes += itemChanges(current, incoming)
         changes += sectionChanges(current, incoming)
 
         if (current.sections.size != incoming.sections.size) {
@@ -115,6 +117,40 @@ object ImportValidator {
     }
 
     /**
+     * The changes to the apps that are in both documents.
+     *
+     * The apps are matched by their package. The name the user gave an app
+     * and the style set on it are both part of the document and both
+     * visible on the home screen, so a payload that changes either of them
+     * changes what the user sees and has to be told about.
+     */
+    private fun itemChanges(current: LayoutDocument, incoming: LayoutDocument): List<String> {
+        val changes = mutableListOf<String>()
+        val currentItems = current.sections.flatMap { it.items }.associateBy { it.packageName }
+        val incomingItems = incoming.sections.flatMap { it.items }.associateBy { it.packageName }
+
+        for ((packageName, after) in incomingItems) {
+            val before = currentItems[packageName] ?: continue
+            if (before.label != after.label) {
+                changes += "Renames $packageName to ${describeName(after.label)}"
+            }
+            if (before.style != after.style) {
+                changes += "Restyles $packageName"
+            }
+        }
+
+        return changes
+    }
+
+    /**
+     * How the name of an app is named in the summary: the name the user
+     * gave it, or the name the app itself carries when the import takes
+     * the custom name away.
+     */
+    private fun describeName(label: String?): String =
+        label?.let { "\"$it\"" } ?: "the app's own name"
+
+    /**
      * The changes between the two documents' sections.
      *
      * A section is recognised by its id, so the same section under another
@@ -125,6 +161,8 @@ object ImportValidator {
     private fun sectionChanges(current: LayoutDocument, incoming: LayoutDocument): List<String> {
         val changes = mutableListOf<String>()
         val currentById = current.sections.associateBy { it.id }
+
+        if (sectionsReordered(current, incoming)) changes += "Reorders the sections"
 
         for (section in incoming.sections) {
             val other = currentById[section.id]
@@ -144,6 +182,23 @@ object ImportValidator {
         }
 
         return changes
+    }
+
+    /**
+     * Whether the sections the two documents share are in another order.
+     *
+     * Only the sections both documents hold are compared: a section that is
+     * only in one of them is reported as added or removed, and it says
+     * nothing about the order of the others.
+     */
+    private fun sectionsReordered(current: LayoutDocument, incoming: LayoutDocument): Boolean {
+        val currentIds = current.sections.map { it.id }
+        val incomingIds = incoming.sections.map { it.id }
+
+        val sharedThere = currentIds.filter { it in incomingIds }
+        val sharedHere = incomingIds.filter { it in currentIds }
+
+        return sharedThere != sharedHere
     }
 
     /**
