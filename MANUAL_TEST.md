@@ -560,9 +560,12 @@ Also report, even if every step passed:
 
 - The automated instrumentation tests in `app/src/androidTest/` (home
   registration, app enumeration, the document round trip, repository
-  persistence, the drawer list, the filter and icon loading). They are
-  shipped unverified — no emulator was available when Liner was built — so
-  running them on a device is a good companion to this script:
+  persistence, the drawer list, the filter and icon loading, and — in
+  `HomeInteractionTest` — a long-press drag that moves a row to the slot it
+  was dropped on, and a swipe up from the bottom edge that opens the
+  drawer). They are shipped unverified — no emulator was available when
+  Liner was built — so running them on a device is a good companion to this
+  script:
   ```
   ./gradlew :app:connectedDebugAndroidTest
   ```
