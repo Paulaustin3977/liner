@@ -103,9 +103,9 @@ the built APKs, the keystore or any local build output.
 ./gradlew test
 ```
 
-The unit tests run headless — 211 of them, covering the model layer, the
-document codec, the edit operations, the drag maths, the style resolver, the
-repository and the settings logic.
+The unit tests run headless, covering the model layer, the document codec,
+the edit operations, the drag maths, the style resolver, the repository and
+the settings logic.
 
 The instrumentation tests under `app/src/androidTest` **were compiled but
 not executed** — the build environment had no emulator or device. Run them
