@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -25,12 +26,18 @@ fun SectionHeaderRow(
     style: ResolvedStyle,
     uppercase: Boolean,
     showRule: Boolean,
+    alignment: Alignment.Horizontal = Alignment.Start,
     modifier: Modifier = Modifier,
 ) {
     // A null colour is the "follow system" sentinel; see [LabelRow].
     val color = style.colorArgb?.let { Color(it) } ?: MaterialTheme.colorScheme.onBackground
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    // The title follows the same alignment as the rows of the section, so a
+    // centred or right-aligned list is centred or right-aligned throughout.
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = alignment,
+    ) {
         Text(
             text = if (uppercase) title.uppercase() else title,
             style = TextStyle(

@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -56,12 +59,14 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.liner.launcher.apps.IconCache
+import dev.liner.launcher.model.AppCatalog
 import dev.liner.launcher.model.ClockFormatter
 import dev.liner.launcher.model.DragTarget
 import dev.liner.launcher.model.HomeEntry
@@ -196,17 +201,12 @@ fun HomeScreen(
             editController.endDrag()
             return
         }
+        // The anchor names the visible row the indicator was drawn against.
+        // It is read before the drag ends, because ending the drag clears it.
+        val anchor = editController.dropAnchor
         when (val target = editController.endDrag()) {
-            is DragTarget.InSection -> viewModel.update { doc ->
-                doc.moveItem(itemId, target.sectionId, target.index)
-            }
-            is DragTarget.PreviousSection -> viewModel.update { doc ->
-                doc.moveItem(
-                    itemId,
-                    target.sectionId,
-                    doc.sectionById(target.sectionId)?.items?.size ?: 0,
-                )
-            }
+            is DragTarget.InSection, is DragTarget.PreviousSection ->
+                viewModel.update { doc -> commitDropToDocument(doc, itemId, target, anchor) }
             null -> Unit
         }
     }
@@ -268,7 +268,18 @@ fun HomeScreen(
         else -> Alignment.Start
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            // A tap on empty space leaves edit mode. The rows are drawn
+            // above this box and consume their own taps, so tapping a row
+            // still opens its editor instead.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = editController.active,
+            ) { editController.exitEditMode() },
+    ) {
         BackgroundLayer(
             spec = theme.background,
             wallpaper = wallpaper,
@@ -287,7 +298,14 @@ fun HomeScreen(
                     vertical = theme.screenPaddingVdp.dp,
                 ),
         ) {
-            ClockDateHeader(theme, chromeColor)
+            ClockDateHeader(
+                theme = theme,
+                textColor = chromeColor,
+                alignment = horizontalAlignment,
+                // The clock dims while edit mode is active, so the list of
+                // items is what the user looks at.
+                dimmed = editController.active,
+            )
 
             // The first-run prompt sits under the clock, above the list.
             if (showFirstRunPrompt) {
@@ -318,6 +336,9 @@ fun HomeScreen(
                                 style = StyleResolver.resolveSectionHeaderStyle(theme),
                                 uppercase = StyleResolver.resolveSectionTitleUppercase(theme),
                                 showRule = StyleResolver.resolveSectionTitleRule(theme),
+                                // The title follows the same alignment as the
+                                // rows below it.
+                                alignment = horizontalAlignment,
                                 // A long press on the header edits the section:
                                 // rename it, or delete it with its items.
                                 modifier = Modifier.combinedClickable(
@@ -360,7 +381,10 @@ fun HomeScreen(
                             onDispose { editController.bounds.remove(entry.item.id) }
                         }
                         LabelRow(
-                            text = entry.displayLabel,
+                            // An app that is gone reads "unavailable": a
+                            // package name on its own reads like a broken
+                            // row, not like an app that is no longer there.
+                            text = AppCatalog.homeRowLabel(entry, appsLoaded),
                             style = StyleResolver.resolveItemStyle(theme, entry.item.style),
                             alignment = horizontalAlignment,
                             icon = icon,
@@ -371,6 +395,18 @@ fun HomeScreen(
                             enabled = entry.available || !appsLoaded,
                             modifier = Modifier
                                 .fillMaxWidth()
+                                // The rows lift while edit mode is active, and
+                                // the row being dragged is faded so the user
+                                // can see which one it is: the list is not
+                                // reordered under the finger.
+                                .scale(if (editController.active) EDIT_MODE_LIFT else 1f)
+                                .alpha(
+                                    if (entry.item.id == editController.draggingId) {
+                                        DRAGGED_ROW_ALPHA
+                                    } else {
+                                        1f
+                                    },
+                                )
                                 .onGloballyPositioned { coordinates ->
                                     val position = coordinates.positionInRoot()
                                     val size = coordinates.size
@@ -569,11 +605,20 @@ fun HomeScreen(
 }
 
 @Composable
-private fun ClockDateHeader(theme: ThemeTokens, textColor: Color) {
+private fun ClockDateHeader(
+    theme: ThemeTokens,
+    textColor: Color,
+    alignment: Alignment.Horizontal,
+    dimmed: Boolean,
+) {
     if (theme.clockStyle == "hidden") return
 
     val context = LocalContext.current
-    val zone = remember { ZoneId.systemDefault() }
+    // The zone is read on every recomposition rather than remembered: a
+    // time-zone change does not recreate the activity, so a remembered zone
+    // would keep showing the old zone's time. The clock ticks every minute,
+    // so the zone is re-read at least that often.
+    val zone = ZoneId.systemDefault()
     val use24Hour = when (theme.clockFormat) {
         "12h" -> false
         "24h" -> true
@@ -594,15 +639,55 @@ private fun ClockDateHeader(theme: ThemeTokens, textColor: Color) {
     val dateSize = if (theme.clockStyle == "large") 18f else 14f
     val clockWeight = if (theme.clockStyle == "large") FontWeight.Light else FontWeight.Normal
 
-    Column(Modifier.fillMaxWidth()) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            // The clock dims while edit mode is active.
+            .alpha(if (dimmed) EDIT_MODE_DIM_ALPHA else 1f),
+        horizontalAlignment = alignment,
+    ) {
         Text(
             text = ClockFormatter.formatTime(now, zone, use24Hour),
-            style = TextStyle(fontSize = clockSize.sp, fontWeight = clockWeight, color = textColor),
+            style = TextStyle(
+                fontSize = clockSize.sp,
+                fontWeight = clockWeight,
+                color = textColor,
+                textAlign = alignment.textAlign(),
+            ),
         )
         val date = ClockFormatter.formatDate(now, zone, theme.dateStyle)
         if (date != null) {
-            Text(text = date, style = TextStyle(fontSize = dateSize.sp, color = textColor))
+            Text(
+                text = date,
+                style = TextStyle(
+                    fontSize = dateSize.sp,
+                    color = textColor,
+                    textAlign = alignment.textAlign(),
+                ),
+            )
         }
         Spacer(Modifier.height(16.dp))
     }
 }
+
+/**
+ * The text alignment that goes with a horizontal alignment.
+ *
+ * The clock and the date are placed by the column's alignment; the text
+ * inside them follows it too, so a date that wraps onto a second line is
+ * aligned the same way as the first.
+ */
+private fun Alignment.Horizontal.textAlign(): TextAlign = when (this) {
+    Alignment.CenterHorizontally -> TextAlign.Center
+    Alignment.End -> TextAlign.End
+    else -> TextAlign.Start
+}
+
+/** The scale the rows are drawn at while edit mode is active. */
+private const val EDIT_MODE_LIFT = 1.02f
+
+/** The alpha the clock is drawn at while edit mode is active. */
+private const val EDIT_MODE_DIM_ALPHA = 0.5f
+
+/** The alpha the row that is being dragged is drawn at. */
+private const val DRAGGED_ROW_ALPHA = 0.4f

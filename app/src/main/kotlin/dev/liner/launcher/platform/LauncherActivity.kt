@@ -96,7 +96,12 @@ class LauncherActivity : ComponentActivity() {
             Toast.makeText(this, "App not installed", Toast.LENGTH_SHORT).show()
             return
         }
-        AppLauncher(this).launch(app)
+        // The app is listed but may still fail to start: its launch
+        // component can be disabled, it can have been updated since the
+        // query, or the system can refuse the start. A tap that does
+        // nothing at all is worse than a tap that says so, so a failed start
+        // is reported — the same way the drawer reports it.
+        launchApp(app)
     }
 
     /**
