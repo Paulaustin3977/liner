@@ -31,8 +31,10 @@ class DropResolutionTest {
 
     private val sectionId = "s1"
 
-    private fun items(count: Int): List<HomeItem> =
-        (1..count).map { HomeItem(id = "i$it", packageName = "com.app$it") }
+    private fun items(count: Int): List<HomeItem> = items("i", count)
+
+    private fun items(prefix: String, count: Int): List<HomeItem> =
+        (1..count).map { HomeItem(id = "$prefix$it", packageName = "com.app$prefix$it") }
 
     private val document = LayoutDocument(
         sections = listOf(Section(id = sectionId, title = "Daily", items = items(10))),
@@ -72,7 +74,7 @@ class DropResolutionTest {
         // The anchor is read before the drag ends: ending it clears the
         // anchor, the way the screen reads it.
         val anchor = controller.dropAnchor
-        val target = controller.endDrag()
+        val target = controller.endDrag()!!
 
         // The slot the maths found counts the visible rows only.
         assertEquals(DragTarget.InSection(sectionId, 3), target)
@@ -148,7 +150,7 @@ class DropResolutionTest {
         // The midpoint of i9 is 530, the midpoint of i10 is 580.
         controller.updateDrag(550f, listOf(sectionId))
         val anchor = controller.dropAnchor
-        val target = controller.endDrag()
+        val target = controller.endDrag()!!
 
         assertEquals(DragTarget.InSection(sectionId, 8), target)
         assertEquals(DropAnchor.Before("i10"), anchor)
@@ -172,7 +174,7 @@ class DropResolutionTest {
         controller.startDrag("i8")
         controller.updateDrag(120f, listOf(sectionId))
         val anchor = controller.dropAnchor
-        val target = controller.endDrag()
+        val target = controller.endDrag()!!
 
         assertEquals(DragTarget.InSection(sectionId, 0), target)
         assertEquals(DropAnchor.Before("i8"), anchor)
@@ -212,21 +214,27 @@ class DropResolutionTest {
     fun `a drop into the section above lands at its end`() {
         val twoSections = document.copy(
             sections = listOf(
-                Section(id = "s1", title = "Daily", items = items(3)),
-                Section(id = "s2", title = "Work", items = items(3)),
+                Section(id = "s1", title = "Daily", items = items("a", 3)),
+                Section(id = "s2", title = "Work", items = items("b", 3)),
             ),
         )
 
+        // "b1" is the first row of the section below: dropping it above its
+        // own section moves it to the end of the section above.
         val moved = commitDropToDocument(
             twoSections,
-            "i4",
+            "b1",
             DragTarget.PreviousSection("s1"),
             null,
         )
 
         assertEquals(
-            listOf("i1", "i2", "i3", "i4"),
+            listOf("a1", "a2", "a3", "b1"),
             moved.sectionById("s1")!!.items.map { it.id },
+        )
+        assertEquals(
+            listOf("b2", "b3"),
+            moved.sectionById("s2")!!.items.map { it.id },
         )
     }
 
