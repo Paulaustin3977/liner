@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -13,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -24,8 +27,17 @@ import java.util.concurrent.atomic.AtomicReference
  * conflated channel consumed by a single coroutine, so two rapid edits can
  * never land out of order — and a burst of edits (a dragged slider fires one
  * per frame) collapses into a single write of the settled state.
+ *
+ * @param store where the document is read from and written to.
+ * @param recoveryLogDir the directory the unreadable payload is preserved in
+ * when the stored layout cannot be decoded — the app's own files directory in
+ * the app. It is null when the caller has nowhere to keep a copy, and then
+ * the payload is only kept in memory.
  */
-class LayoutRepository(private val store: DocumentStore) {
+class LayoutRepository(
+    private val store: DocumentStore,
+    private val recoveryLogDir: File? = null,
+) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -88,6 +100,14 @@ class LayoutRepository(private val store: DocumentStore) {
     var recoveredPayload: String? = null
         private set
 
+    /**
+     * The payload that has already been written to the recovery log.
+     *
+     * The log is written once per broken payload: a read that fails again
+     * does not rewrite it.
+     */
+    private val preservedPayload = AtomicReference<String?>(null)
+
     init {
         scope.launch {
             for (pending in writes) {
@@ -119,7 +139,15 @@ class LayoutRepository(private val store: DocumentStore) {
      * defaults, but the failure is *reported* rather than silent: [loadFailed]
      * goes true and the original payload is kept in [recoveredPayload] so the
      * platform layer can log it and the UI can tell the user their layout was
-     * reset instead of quietly losing it.
+     * reset instead of quietly losing it. The repository also writes the
+     * payload to its own recovery log, so the copy exists even when the
+     * screen that loaded the layout is not the home screen.
+     *
+     * A *cancelled* read is not a failed read. The read is suspended on the
+     * file read, so it can be cancelled — when the screen that asked for it
+     * goes away, for instance. The store was never read, so nothing about it
+     * is known: the repository is left exactly as it was, and the next
+     * caller reads it again.
      */
     suspend fun load() {
         // The store is read once per process. A second load would race the
@@ -132,7 +160,16 @@ class LayoutRepository(private val store: DocumentStore) {
         // unreadable for the life of the process. The failure is reported
         // through [loadFailed] and the user can retry by restarting the app.
         if (!loaded.compareAndSet(false, true)) return
-        readFromStore()
+        try {
+            readFromStore()
+        } catch (e: CancellationException) {
+            // The read never happened, so the "once per process" flag must
+            // not stay set: the next caller has to be able to read the store
+            // again, or the user would be left with the defaults for the rest
+            // of the process even though their layout is there.
+            loaded.compareAndSet(true, false)
+            throw e
+        }
     }
 
     /**
@@ -143,34 +180,48 @@ class LayoutRepository(private val store: DocumentStore) {
     }
 
     private suspend fun readFromStore() {
-        try {
-            var readFailed = false
-            val raw = try {
-                store.read()
+        var readFailed = false
+        val raw = try {
+            store.read()
+        } catch (e: CancellationException) {
+            // The read was aborted, not failed: the scope it ran in was
+            // cancelled — most likely because the screen that asked for the
+            // layout went away. The payload on disk is perfectly fine, so
+            // swallowing the cancellation here would replace the user's
+            // layout with the defaults and report a failure that did not
+            // happen. Nothing is changed and the caller may try again.
+            throw e
+        } catch (_: Throwable) {
+            // The read itself failed — that is not the same as "nothing
+            // stored", and the user's layout must not be reported as if it
+            // had never existed.
+            readFailed = true
+            null
+        }
+
+        val decoded = raw?.let { payload ->
+            try {
+                DocumentCodec.decode(payload)
             } catch (_: Throwable) {
-                // The read itself failed — that is not the same as "nothing
-                // stored", and the user's layout must not be reported as if it
-                // had never existed.
-                readFailed = true
                 null
             }
+        }
 
+        if (raw != null && decoded == null) {
+            // The payload is unreadable. It is preserved here, before
+            // anything can replace it on disk, so that the user can get it
+            // back by hand — whichever screen loaded the layout.
+            preservePayload(raw)
+        }
+
+        synchronized(lock) {
             if (raw == null) {
                 // Nothing stored is not a failure, so the flag is cleared here
                 // rather than left over from an earlier failed load.
                 recoveredPayload = null
                 _loadFailed.value = readFailed
                 _document.value = LayoutDocument()
-                return
-            }
-
-            val decoded = try {
-                DocumentCodec.decode(raw)
-            } catch (_: Throwable) {
-                null
-            }
-
-            if (decoded == null) {
+            } else if (decoded == null) {
                 recoveredPayload = raw
                 _loadFailed.value = true
                 _document.value = LayoutDocument()
@@ -179,21 +230,49 @@ class LayoutRepository(private val store: DocumentStore) {
                 _loadFailed.value = false
                 _document.value = decoded
             }
-        } finally {
-            // Whether the read succeeded or failed, the document has been
-            // dealt with: a failed read leaves the defaults in memory, and
-            // the caller must know that too.
+
+            // The read is over, so the document has been dealt with: a
+            // failed read leaves the defaults in memory, and the caller must
+            // know that too.
             //
             // The queued edits are applied under the same lock that [update]
             // takes, so an edit that arrives while the queue is draining
             // waits for the lock and is applied after the queued ones — the
             // edits keep the order in which the user made them.
-            synchronized(lock) {
-                _documentLoaded.value = true
-                val pending = pendingTransforms.toList()
-                pendingTransforms.clear()
-                pending.forEach { applyTransform(it) }
+            _documentLoaded.value = true
+            val pending = pendingTransforms.toList()
+            pendingTransforms.clear()
+            pending.forEach { applyTransform(it) }
+        }
+    }
+
+    /**
+     * Writes the unreadable payload to the recovery log, so the user can
+     * get their layout back by hand.
+     *
+     * The same payload is written only once: a read that fails again does
+     * not rewrite the file, so the copy stays the one that was actually
+     * unreadable. A payload that differs from the one already preserved is
+     * written — it is a different broken layout.
+     *
+     * Preserving the payload is a courtesy: a failure to write the file must
+     * never crash the launcher, and the copy is not allowed to hold up the
+     * load, so it is written off the main thread and never cancels the read
+     * that found the broken payload.
+     */
+    private suspend fun preservePayload(payload: String) {
+        val dir = recoveryLogDir ?: return
+        if (preservedPayload.get() == payload) return
+        try {
+            withContext(NonCancellable + Dispatchers.IO) {
+                File(dir, RECOVERY_LOG_NAME).writeText(payload)
             }
+            preservedPayload.set(payload)
+        } catch (e: CancellationException) {
+            // Never swallow cancellation.
+            throw e
+        } catch (_: Throwable) {
+            // The launcher keeps running without the copy.
         }
     }
 
@@ -280,5 +359,8 @@ class LayoutRepository(private val store: DocumentStore) {
     companion object {
         /** How long the writer waits for a burst of updates to settle. */
         private const val WRITE_QUIET_MS = 100L
+
+        /** The file the unreadable layout is preserved in. */
+        const val RECOVERY_LOG_NAME = "liner-recovered-layout.json"
     }
 }

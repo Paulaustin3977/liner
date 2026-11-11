@@ -15,7 +15,14 @@ class AppContainer(context: Context) {
 
     private val appContext = context.applicationContext
 
-    val repository: LayoutRepository = LayoutRepository(DataStoreDocumentStore(appContext))
+    // The repository reads the store once per process and writes it back on
+    // every edit. It also preserves an unreadable layout in the app's own
+    // files directory, so the user's work survives a corrupt file whichever
+    // screen loaded it.
+    val repository: LayoutRepository = LayoutRepository(
+        DataStoreDocumentStore(appContext),
+        recoveryLogDir = appContext.filesDir,
+    )
     val appsRepository: InstalledAppsRepository = InstalledAppsRepository(appContext)
     // 48dp is the drawer's tile size; the pixel size follows the density.
     val iconCache: IconCache = IconCache.forPackageManager(

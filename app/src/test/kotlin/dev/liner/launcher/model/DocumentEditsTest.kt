@@ -62,6 +62,64 @@ class DocumentEditsTest {
     }
 
     @Test
+    fun `moveItem puts the item in the first section with a matching id`() {
+        // A hand-edited layout can repeat a section id. The item must land
+        // in the first of the two, not in both of them.
+        val document = LayoutDocument(
+            sections = listOf(
+                Section(id = "s1", title = "One", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+                Section(id = "s1", title = "Also one", items = listOf(HomeItem(id = "b", packageName = "p.b"))),
+                Section(id = "s2", items = listOf(HomeItem(id = "c", packageName = "p.c"))),
+            ),
+        )
+
+        val result = document.moveItem("c", toSectionId = "s1", toIndex = 0)
+
+        assertEquals(listOf("c", "a"), result.sections[0].items.map { it.id })
+        assertEquals(listOf("b"), result.sections[1].items.map { it.id })
+    }
+
+    @Test
+    fun `moveItem removes every copy of the item`() {
+        // A hand-edited layout can repeat an item id. The copy in the other
+        // section must go with the one that is moved.
+        val document = LayoutDocument(
+            sections = listOf(
+                Section(
+                    id = "s1",
+                    items = listOf(
+                        HomeItem(id = "a", packageName = "p.a"),
+                        HomeItem(id = "b", packageName = "p.b"),
+                    ),
+                ),
+                Section(id = "s2", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+            ),
+        )
+
+        val result = document.moveItem("a", toSectionId = "s2", toIndex = 0)
+
+        assertEquals(listOf("b"), result.sections[0].items.map { it.id })
+        assertEquals(listOf("a"), result.sections[1].items.map { it.id })
+    }
+
+    @Test
+    fun `moveItem removes the item from every section that holds it`() {
+        val document = LayoutDocument(
+            sections = listOf(
+                Section(id = "s1", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+                Section(id = "s2", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+                Section(id = "s3", items = listOf(HomeItem(id = "a", packageName = "p.a"))),
+            ),
+        )
+
+        val result = document.moveItem("a", toSectionId = "s3", toIndex = 0)
+
+        assertTrue(result.sections[0].items.isEmpty())
+        assertTrue(result.sections[1].items.isEmpty())
+        assertEquals(listOf("a"), result.sections[2].items.map { it.id })
+    }
+
+    @Test
     fun `removeItem drops it from its section`() {
         val result = doc().removeItem("b")
 
@@ -213,6 +271,17 @@ class DocumentEditsTest {
         assertEquals(3, result.sections.size)
         assertEquals("s3", result.sections[2].id)
         assertEquals("Three", result.sections[2].title)
+    }
+
+    @Test
+    fun `addSection refuses a duplicate id`() {
+        // A hand-edited layout can already hold this id. Two sections with
+        // the same id would show the same apps, so the duplicate is refused.
+        val before = doc()
+
+        val result = before.addSection("s1", "Another one")
+
+        assertEquals(before, result)
     }
 
     @Test

@@ -4,6 +4,12 @@ package dev.liner.launcher.model
  * Removes the item from wherever it currently lives, then inserts it at
  * [toIndex] within the target section's post-removal item list.
  * An unknown [toSectionId] or [itemId] leaves the document unchanged.
+ *
+ * A layout that was edited by hand can repeat a section id or an item id,
+ * so the removal takes the item out of *every* section that holds it and the
+ * insert goes into the *first* section whose id matches — the same rules
+ * [removeItem] follows. A repeated section id must not put the item in two
+ * sections, and a repeated item id must not leave a copy behind.
  */
 fun LayoutDocument.moveItem(itemId: String, toSectionId: String, toIndex: Int): LayoutDocument {
     val source = sections.firstOrNull { s -> s.items.any { it.id == itemId } } ?: return this
@@ -11,11 +17,15 @@ fun LayoutDocument.moveItem(itemId: String, toSectionId: String, toIndex: Int): 
     val item = source.items.first { it.id == itemId }
 
     val withoutItem = sections.map { s ->
-        if (s.id == source.id) s.copy(items = s.items.filterNot { it.id == itemId }) else s
+        if (s.items.any { it.id == itemId }) s.copy(items = s.items.filterNot { it.id == itemId }) else s
     }
 
-    return withoutItem.map { s ->
-        if (s.id != toSectionId) {
+    // The first section with a matching id takes the item — a repeated
+    // section id must not get a second copy of it.
+    val target = withoutItem.indexOfFirst { it.id == toSectionId }
+
+    return withoutItem.mapIndexed { index, s ->
+        if (index != target) {
             s
         } else {
             val safeIndex = toIndex.coerceIn(0, s.items.size)
@@ -75,8 +85,17 @@ fun LayoutDocument.reorderHomeItems(flatOrder: List<String>): LayoutDocument {
     })
 }
 
-fun LayoutDocument.addSection(id: String, title: String? = null): LayoutDocument =
-    copy(sections = sections + Section(id = id, title = title?.trim()?.takeIf { it.isNotEmpty() }))
+/**
+ * Adds a section at the end of the document.
+ *
+ * A layout that was edited by hand can already hold a section with this id,
+ * so a duplicate is refused rather than added — the same rule [addItem]
+ * follows. Two sections with the same id would show the same apps.
+ */
+fun LayoutDocument.addSection(id: String, title: String? = null): LayoutDocument {
+    if (sections.any { it.id == id }) return this
+    return copy(sections = sections + Section(id = id, title = title?.trim()?.takeIf { it.isNotEmpty() }))
+}
 
 fun LayoutDocument.renameSection(sectionId: String, title: String?): LayoutDocument =
     copy(sections = sections.map { s ->

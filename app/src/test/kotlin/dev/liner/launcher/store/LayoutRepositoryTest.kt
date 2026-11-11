@@ -8,14 +8,23 @@ import dev.liner.launcher.model.renameSection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 
 class LayoutRepositoryTest {
+
+    @Rule
+    @JvmField
+    val tempFolder = TemporaryFolder()
 
     @Test
     fun `load reads the stored document`() = runTest {
@@ -467,6 +476,138 @@ class LayoutRepositoryTest {
         val written = DocumentCodec.decode(store.read()!!)
         assertEquals(listOf("s0", "s1"), written?.sections?.map { it.id })
     }
+
+    @Test
+    fun `a cancelled read does not replace the layout with the defaults`() = runTest {
+        // The store holds the user's layout, and the read of it is held at a
+        // gate: the read can be cancelled while it is in flight, the way a
+        // screen that goes away cancels the read it started.
+        val store = GatedDocumentStore(
+            DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1")))),
+        )
+        val repository = LayoutRepository(store)
+
+        val loading = launch { repository.load() }
+        store.entered.await()
+        loading.cancelAndJoin()
+
+        // The read was aborted, not failed: the store says nothing about the
+        // layout, so nothing is reported and the document is not touched.
+        assertFalse(repository.documentLoaded.value)
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
+
+        // The aborted read did not consume the once-per-process flag, so
+        // the next caller reads the store again instead of being left with
+        // the defaults for the rest of the process.
+        repository.load()
+
+        assertTrue(repository.documentLoaded.value)
+        assertEquals(listOf("s1"), repository.document.value.sections.map { it.id })
+    }
+
+    @Test
+    fun `a cancelled read does not apply a queued edit to the defaults`() = runTest {
+        val store = GatedDocumentStore(
+            DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s0")))),
+        )
+        val repository = LayoutRepository(store)
+
+        val loading = launch { repository.load() }
+        store.entered.await()
+
+        // The user edits the layout while the store is still being read.
+        repository.update { it.addSection("s1", "One") }
+
+        loading.cancelAndJoin()
+
+        // The edit was not applied to the default document: the read was
+        // aborted, so the document in memory is still the default one and
+        // the edit is still queued.
+        assertEquals(LayoutDocument(), repository.document.value)
+        assertFalse(repository.documentLoaded.value)
+
+        // The next read applies the queued edit to the stored layout, and
+        // the stored layout is not overwritten with the defaults.
+        repository.load()
+        repository.awaitPendingWrite()
+
+        assertEquals(listOf("s0", "s1"), repository.document.value.sections.map { it.id })
+        val written = DocumentCodec.decode(store.content!!)
+        assertEquals(listOf("s0", "s1"), written?.sections?.map { it.id })
+    }
+
+    @Test
+    fun `a cancelled re-read leaves the loaded layout in place`() = runTest {
+        val store = GatedDocumentStore(
+            DocumentCodec.encode(LayoutDocument(sections = listOf(Section(id = "s1")))),
+            holdOnRead = 2,
+        )
+        val repository = LayoutRepository(store)
+
+        repository.load()
+        assertEquals(listOf("s1"), repository.document.value.sections.map { it.id })
+
+        // A second read of the store is cancelled.
+        val reading = launch { repository.reload() }
+        store.entered.await()
+        reading.cancelAndJoin()
+
+        // The layout that was read is still in memory: a cancelled read says
+        // nothing about the store, so it must not replace the document with
+        // the defaults, and it must not report a failure.
+        assertEquals(listOf("s1"), repository.document.value.sections.map { it.id })
+        assertFalse(repository.loadFailed.value)
+        assertNull(repository.recoveredPayload)
+    }
+
+    @Test
+    fun `an unreadable payload is preserved in the recovery log`() = runTest {
+        val dir = tempFolder.newFolder("recovery")
+        val repository = LayoutRepository(InMemoryDocumentStore("{not json"), recoveryLogDir = dir)
+
+        repository.load()
+
+        val log = File(dir, LayoutRepository.RECOVERY_LOG_NAME)
+        assertTrue(log.exists())
+        assertEquals("{not json", log.readText())
+    }
+
+    @Test
+    fun `the recovery log is written once`() = runTest {
+        val dir = tempFolder.newFolder("recovery")
+        val repository = LayoutRepository(InMemoryDocumentStore("{not json"), recoveryLogDir = dir)
+
+        repository.load()
+        val log = File(dir, LayoutRepository.RECOVERY_LOG_NAME)
+        assertTrue(log.exists())
+
+        // The same broken payload is read again: the log is not written a
+        // second time.
+        log.delete()
+        repository.reload()
+
+        assertFalse(log.exists())
+    }
+
+    @Test
+    fun `the recovery log survives the edit that replaces the broken layout`() = runTest {
+        // The settings screen can be the first screen of the process: it
+        // loads the layout, and the first edit then replaces the broken
+        // payload on disk. The copy has to exist before that happens.
+        val dir = tempFolder.newFolder("recovery")
+        val store = InMemoryDocumentStore("{not json")
+        val repository = LayoutRepository(store, recoveryLogDir = dir)
+
+        repository.load()
+
+        repository.update { it.addSection("s1", "One") }
+        repository.awaitPendingWrite()
+
+        val log = File(dir, LayoutRepository.RECOVERY_LOG_NAME)
+        assertTrue(log.exists())
+        assertEquals("{not json", log.readText())
+    }
 }
 
 /**
@@ -474,7 +615,6 @@ class LayoutRepositoryTest {
  * how many times the document was persisted.
  */
 private class CountingDocumentStore : DocumentStore {
-
     private val lock = Any()
     private val written = mutableListOf<String>()
 
@@ -488,5 +628,42 @@ private class CountingDocumentStore : DocumentStore {
 
     override suspend fun write(json: String) {
         synchronized(lock) { written += json }
+    }
+}
+
+/**
+ * A [DocumentStore] whose read can be held at a gate, so a test can cancel
+ * a read while it is in flight — the way a screen that goes away cancels the
+ * read of the layout it started.
+ */
+private class GatedDocumentStore(
+    stored: String?,
+    private val holdOnRead: Int = 1,
+) : DocumentStore {
+
+    /** Completes when the held read has started. */
+    val entered = CompletableDeferred<Unit>()
+
+    /** The held read waits for this. */
+    val gate = CompletableDeferred<Unit>()
+
+    /** How many times the store has been read. */
+    var reads = 0
+        private set
+
+    /** The content of the store. */
+    var content: String? = stored
+
+    override suspend fun read(): String? {
+        reads++
+        if (reads == holdOnRead) {
+            entered.complete(Unit)
+            gate.await()
+        }
+        return content
+    }
+
+    override suspend fun write(json: String) {
+        content = json
     }
 }
